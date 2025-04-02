@@ -42,7 +42,7 @@ def receive_data(client_socket):
                     if disconnected_id in other_players:
                         del other_players[disconnected_id]
                 else:
-                    # Message de position d'un autre joueur
+                    # Message de position d'un joueur
                     other_id, position = message
                     if other_id != client_id:  # Ne pas mettre à jour sa propre position
                         other_players[other_id] = position
@@ -104,7 +104,7 @@ def main():
             break
 
         # Dessiner les autres joueurs
-        for other_player_pos in other_players.values():
+        for other_id, other_player_pos in other_players.items():
             pygame.draw.rect(
                 screen,
                 (0, 255, 0),

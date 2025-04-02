@@ -49,11 +49,12 @@ class ClientThread(threading.Thread):
                     continue
 
                 # Envoyer les positions de tous les joueurs à tous les clients
-                for client_id, (player_socket, player_pos) in players.items():
+                for client_socket in client_sockets.keys():
                     try:
-                        # Envoyer la position de ce joueur au client
-                        data = pickle.dumps((client_id, player_pos))
-                        player_socket.send(data)
+                        # Envoyer toutes les positions à ce client
+                        for player_id, (_, player_pos) in players.items():
+                            data = pickle.dumps((player_id, player_pos))
+                            client_socket.send(data)
                     except socket.error as e:
                         logger.error(f"Error sending data to client: {e}")
                         break
