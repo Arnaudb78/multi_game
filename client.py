@@ -2,6 +2,7 @@ import pygame
 import socket
 import threading
 import pickle
+from menu import Menu
 
 # Configuration du client
 DEFAULT_HOST = '127.0.0.1'
@@ -35,13 +36,6 @@ client_id = None
 
 # Dictionnaire des autres joueurs
 other_players = {}  # {client_id: (x, y)}
-
-# Variables pour les champs de saisie
-host_input = DEFAULT_HOST
-port_input = str(DEFAULT_PORT)
-active_input = None
-cursor_visible = True
-cursor_timer = 0
 
 
 def draw_text_input(text, x, y, width, height, active):
@@ -169,18 +163,15 @@ def receive_data(client_socket):
 
 
 def main():
-    global player_x, player_y, host_input, port_input, active_input, cursor_visible, cursor_timer
+    global player_x, player_y
     
     # Menu principal
+    menu = Menu(screen, DEFAULT_HOST, str(DEFAULT_PORT))
     menu_running = True
+    
     while menu_running:
-        start_rect, quit_rect, host_rect, port_rect = draw_menu()
-        
-        # Update cursor blink
-        current_time = pygame.time.get_ticks()
-        if current_time - cursor_timer > 500:  # Toggle every 500ms
-            cursor_visible = not cursor_visible
-            cursor_timer = current_time
+        start_rect, quit_rect, host_rect, port_rect = menu.draw()
+        menu.update()
         
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -193,34 +184,16 @@ def main():
                 elif quit_rect.collidepoint(mouse_pos):
                     pygame.quit()
                     return
-                elif host_rect.collidepoint(mouse_pos):
-                    active_input = 'host'
-                elif port_rect.collidepoint(mouse_pos):
-                    active_input = 'port'
                 else:
-                    active_input = None
+                    menu.handle_event(event)
             elif event.type == pygame.KEYDOWN:
-                if active_input == 'host':
-                    if event.key == pygame.K_BACKSPACE:
-                        host_input = host_input[:-1]
-                    elif event.key == pygame.K_RETURN:
-                        active_input = 'port'
-                    elif len(host_input) < 15:  # Limit IP length
-                        if event.unicode.isprintable():
-                            host_input += event.unicode
-                elif active_input == 'port':
-                    if event.key == pygame.K_BACKSPACE:
-                        port_input = port_input[:-1]
-                    elif event.key == pygame.K_RETURN:
-                        active_input = None
-                    elif len(port_input) < 5 and event.unicode.isdigit():
-                        port_input += event.unicode
+                menu.handle_event(event)
 
     # Connexion au serveur
     try:
-        port = int(port_input)
+        host, port = menu.get_connection_info()
         client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        client_socket.connect((host_input, port))
+        client_socket.connect((host, port))
     except Exception as e:
         print(f"Connection error: {e}")
         pygame.quit()
@@ -235,12 +208,9 @@ def main():
     receive_thread.start()
 
     clock = pygame.time.Clock()
-    last_update = pygame.time.get_ticks()
 
     running = True
     while running:
-        current_time = pygame.time.get_ticks()
-        
         # Process events
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
