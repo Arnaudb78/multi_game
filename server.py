@@ -30,10 +30,19 @@ class ClientThread(threading.Thread):
         players[self.client_id] = (client_socket, (400, 300))  # Position initiale
         client_sockets[client_socket] = self.client_id
 
+    def send_data(self, data):
+        try:
+            self.client_socket.send(pickle.dumps(data))
+        except socket.error as e:
+            logger.error(f"Error sending data to client: {e}")
+            return False
+        return True
+
     def run(self):
         try:
             # Envoyer l'ID du client
-            self.client_socket.send(pickle.dumps(('init', self.client_id)))
+            if not self.send_data(('init', self.client_id)):
+                return
             
             while True:
                 data = self.client_socket.recv(1024)
@@ -53,8 +62,8 @@ class ClientThread(threading.Thread):
                     try:
                         # Envoyer toutes les positions à ce client
                         for player_id, (_, player_pos) in players.items():
-                            data = pickle.dumps((player_id, player_pos))
-                            client_socket.send(data)
+                            if not self.send_data((player_id, player_pos)):
+                                break
                     except socket.error as e:
                         logger.error(f"Error sending data to client: {e}")
                         break
@@ -65,10 +74,11 @@ class ClientThread(threading.Thread):
             self.client_socket.close()
             if self.client_id in players:
                 # Notifier tous les clients de la déconnexion
-                disconnect_message = pickle.dumps(('disconnect', self.client_id))
+                disconnect_message = ('disconnect', self.client_id)
                 for client_socket in client_sockets.keys():
                     try:
-                        client_socket.send(disconnect_message)
+                        pickle.dumps(disconnect_message)
+                        client_socket.send(pickle.dumps(disconnect_message))
                     except:
                         pass
                 del players[self.client_id]

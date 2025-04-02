@@ -66,25 +66,38 @@ def draw_menu():
 
 def receive_data(client_socket):
     global other_players, client_id
+    buffer = b""
     while True:
         try:
             data = client_socket.recv(1024)
-            if data:
-                message = pickle.loads(data)
-                if message[0] == 'init':
-                    # Message d'initialisation avec l'ID du client
-                    client_id = message[1]
-                    print(f"Connected with ID: {client_id}")
-                elif message[0] == 'disconnect':
-                    # Message de déconnexion d'un joueur
-                    disconnected_id = message[1]
-                    if disconnected_id in other_players:
-                        del other_players[disconnected_id]
-                else:
-                    # Message de position d'un joueur
-                    other_id, position = message
-                    if other_id != client_id:  # Ne pas mettre à jour sa propre position
-                        other_players[other_id] = position
+            if not data:
+                break
+                
+            buffer += data
+            while len(buffer) > 0:
+                try:
+                    # Try to unpickle the data
+                    message = pickle.loads(buffer)
+                    buffer = b""  # Clear buffer after successful unpickling
+                    
+                    if message[0] == 'init':
+                        # Message d'initialisation avec l'ID du client
+                        client_id = message[1]
+                        print(f"Connected with ID: {client_id}")
+                    elif message[0] == 'disconnect':
+                        # Message de déconnexion d'un joueur
+                        disconnected_id = message[1]
+                        if disconnected_id in other_players:
+                            del other_players[disconnected_id]
+                    else:
+                        # Message de position d'un joueur
+                        other_id, position = message
+                        if other_id != client_id:  # Ne pas mettre à jour sa propre position
+                            other_players[other_id] = position
+                except pickle.UnpicklingError:
+                    # If we can't unpickle, we need more data
+                    break
+                    
         except Exception as e:
             print(f"Error receiving data: {e}")
             break
