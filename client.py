@@ -36,10 +36,16 @@ def receive_data(client_socket):
                     # Message d'initialisation avec l'ID du client
                     client_id = message[1]
                     print(f"Connected with ID: {client_id}")
+                elif message[0] == 'disconnect':
+                    # Message de déconnexion d'un joueur
+                    disconnected_id = message[1]
+                    if disconnected_id in other_players:
+                        del other_players[disconnected_id]
                 else:
                     # Message de position d'un autre joueur
                     other_id, position = message
-                    other_players[other_id] = position
+                    if other_id != client_id:  # Ne pas mettre à jour sa propre position
+                        other_players[other_id] = position
         except Exception as e:
             print(f"Error receiving data: {e}")
             break

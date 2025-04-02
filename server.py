@@ -6,7 +6,7 @@ import uuid
 
 
 # Configuration du serveur
-HOST = '0.0.0.0'  # Adresse localhost
+HOST = '0.0.0.0'  # Adresse de connection
 PORT = 12345        # Port à utiliser
 
 # Configuration du logging
@@ -50,20 +50,26 @@ class ClientThread(threading.Thread):
 
                 # Envoyer les positions de tous les joueurs à tous les clients
                 for client_id, (player_socket, player_pos) in players.items():
-                    if player_socket != self.client_socket:
-                        try:
-                            # Envoyer la position de ce joueur au client
-                            data = pickle.dumps((client_id, player_pos))
-                            player_socket.send(data)
-                        except socket.error as e:
-                            logger.error(f"Error sending data to client: {e}")
-                            break
+                    try:
+                        # Envoyer la position de ce joueur au client
+                        data = pickle.dumps((client_id, player_pos))
+                        player_socket.send(data)
+                    except socket.error as e:
+                        logger.error(f"Error sending data to client: {e}")
+                        break
 
         except socket.error as e:
             logger.error(f"Error in client thread: {e}")
         finally:
             self.client_socket.close()
             if self.client_id in players:
+                # Notifier tous les clients de la déconnexion
+                disconnect_message = pickle.dumps(('disconnect', self.client_id))
+                for client_socket in client_sockets.keys():
+                    try:
+                        client_socket.send(disconnect_message)
+                    except:
+                        pass
                 del players[self.client_id]
             if self.client_socket in client_sockets:
                 del client_sockets[self.client_socket]
