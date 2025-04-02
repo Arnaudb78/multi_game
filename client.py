@@ -19,19 +19,27 @@ pygame.display.set_caption('Jeu Shooter Multijoueur')
 player_x, player_y = 400, 300
 player_speed = 5
 player_color = (255, 0, 0)  # Rouge pour le joueur
+client_id = None
 
 # Dictionnaire des autres joueurs
 other_players = {}  # {client_id: (x, y)}
 
 
 def receive_data(client_socket):
-    global other_players
+    global other_players, client_id
     while True:
         try:
             data = client_socket.recv(1024)
             if data:
-                client_id, position = pickle.loads(data)
-                other_players[client_id] = position
+                message = pickle.loads(data)
+                if message[0] == 'init':
+                    # Message d'initialisation avec l'ID du client
+                    client_id = message[1]
+                    print(f"Connected with ID: {client_id}")
+                else:
+                    # Message de position d'un autre joueur
+                    other_id, position = message
+                    other_players[other_id] = position
         except Exception as e:
             print(f"Error receiving data: {e}")
             break

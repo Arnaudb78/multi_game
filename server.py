@@ -2,10 +2,11 @@ import socket
 import threading
 import logging
 import pickle
+import uuid
 
 
 # Configuration du serveur
-HOST = '127.0.0.1'  # Adresse localhost
+HOST = '0.0.0.0'  # Adresse localhost
 PORT = 12345        # Port à utiliser
 
 # Configuration du logging
@@ -15,8 +16,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Liste des joueurs avec leurs positions
-players = {}  # {client_socket: (x, y)}
+# Dictionnaire des joueurs avec leurs positions
+players = {}  # {client_id: (socket, position)}
+client_sockets = {}  # {socket: client_id}
 
 
 class ClientThread(threading.Thread):
@@ -24,9 +26,15 @@ class ClientThread(threading.Thread):
         threading.Thread.__init__(self)
         self.client_socket = client_socket
         self.client_address = client_address
+        self.client_id = str(uuid.uuid4())
+        players[self.client_id] = (client_socket, (400, 300))  # Position initiale
+        client_sockets[client_socket] = self.client_id
 
     def run(self):
         try:
+            # Envoyer l'ID du client
+            self.client_socket.send(pickle.dumps(('init', self.client_id)))
+            
             while True:
                 data = self.client_socket.recv(1024)
                 if not data:
@@ -35,17 +43,18 @@ class ClientThread(threading.Thread):
                 # Mettre à jour la position du joueur
                 try:
                     position = pickle.loads(data)
-                    players[self.client_socket] = position
+                    players[self.client_id] = (self.client_socket, position)
                 except Exception as e:
                     logger.error(f"Error processing player position: {e}")
                     continue
 
                 # Envoyer les positions de tous les joueurs à tous les clients
-                for player_socket in players:
+                for client_id, (player_socket, player_pos) in players.items():
                     if player_socket != self.client_socket:
                         try:
                             # Envoyer la position de ce joueur au client
-                            player_socket.send(pickle.dumps((self.client_socket, position)))
+                            data = pickle.dumps((client_id, player_pos))
+                            player_socket.send(data)
                         except socket.error as e:
                             logger.error(f"Error sending data to client: {e}")
                             break
@@ -54,8 +63,10 @@ class ClientThread(threading.Thread):
             logger.error(f"Error in client thread: {e}")
         finally:
             self.client_socket.close()
-            if self.client_socket in players:
-                del players[self.client_socket]
+            if self.client_id in players:
+                del players[self.client_id]
+            if self.client_socket in client_sockets:
+                del client_sockets[self.client_socket]
             logger.info(f"Client disconnected: {self.client_address}")
 
 
