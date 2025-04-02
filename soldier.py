@@ -56,6 +56,8 @@ class Soldier:
                         )
                         # Load and convert image with alpha channel
                         image = pygame.image.load(image_path).convert_alpha()
+                        # Remove black background
+                        image.set_colorkey((0, 0, 0))
                         # Scale down the image
                         new_size = (
                             int(image.get_width() * self.scale_factor),
@@ -75,6 +77,8 @@ class Soldier:
                                 f"{state.value}.png"
                             )
                             image = pygame.image.load(image_path).convert_alpha()
+                            # Remove black background
+                            image.set_colorkey((0, 0, 0))
                             new_size = (
                                 int(image.get_width() * self.scale_factor),
                                 int(image.get_height() * self.scale_factor)
