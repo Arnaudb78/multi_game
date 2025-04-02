@@ -61,7 +61,7 @@ class Menu:
             self.screen.blit(join_button, join_rect)
 
             if self.mode == 'join':
-                label = small_font.render("IP de l’hôte :", True, WHITE)
+                label = small_font.render("IP de l'hôte :", True, WHITE)
                 self.screen.blit(label, (width/2 - 150, height/2 + 120))
                 self.input_rect = self.draw_input(self.ip_input, width/2 - 50, height/2 + 115, 200, 40, self.active_input)
 
@@ -106,31 +106,31 @@ class Menu:
             self.cursor_timer = current_time
 
     def show_profile_selection(self):
-        pseudonyms = ['Falcon', 'Ninja', 'Rogue', 'Blaze', 'Viper']
-        colors = [RED, GREEN, BLUE, YELLOW, MAGENTA]
+        soldiers = ['Falcon', 'Rogue']
         selected_name = None
-        selected_color = None
+        selected_soldier = None
         clock = pygame.time.Clock()
 
         while True:
             v_rect = None
             self.screen.fill(BLACK)
             width, height = self.screen.get_size()
-            title = small_font.render('Choisis ton pseudo et ta couleur', True, WHITE)
+            title = small_font.render('Choisis ton pseudo et ton soldat', True, WHITE)
             self.screen.blit(title, (width/2 - 150, 50))
 
-            for i, name in enumerate(pseudonyms):
+            # Draw soldier selection
+            for i, name in enumerate(soldiers):
                 label = small_font.render(name, True, WHITE)
                 rect = label.get_rect(topleft=(100, 100 + i * 50))
-                pygame.draw.rect(self.screen, GREEN if name == selected_name else GRAY, rect.inflate(20, 10), 2)
+                pygame.draw.rect(self.screen, GREEN if name == selected_soldier else GRAY, rect.inflate(20, 10), 2)
                 self.screen.blit(label, rect)
 
-            for i, color in enumerate(colors):
-                rect = pygame.Rect(400 + i * 60, 120, 40, 40)
-                pygame.draw.rect(self.screen, color, rect)
-                pygame.draw.rect(self.screen, WHITE, rect, 2 if color != selected_color else 4)
+            # Draw name input
+            name_label = small_font.render('Ton pseudo:', True, WHITE)
+            self.screen.blit(name_label, (100, 200))
+            name_input = self.draw_input(selected_name if selected_name else '', 100, 240, 200, 40, False)
 
-            if selected_name and selected_color:
+            if selected_name and selected_soldier:
                 validate = small_font.render('Valider', True, WHITE)
                 v_rect = validate.get_rect(center=(width/2, height - 60))
                 pygame.draw.rect(self.screen, GREEN, v_rect.inflate(20, 10))
@@ -143,15 +143,25 @@ class Menu:
                     return None, None
                 elif event.type == pygame.MOUSEBUTTONDOWN:
                     mx, my = event.pos
-                    for i, name in enumerate(pseudonyms):
+                    # Check soldier selection
+                    for i, name in enumerate(soldiers):
                         rect = pygame.Rect(100, 100 + i * 50, 150, 40)
                         if rect.collidepoint(mx, my):
-                            selected_name = name
-                    for i, color in enumerate(colors):
-                        rect = pygame.Rect(400 + i * 60, 120, 40, 40)
-                        if rect.collidepoint(mx, my):
-                            selected_color = color
+                            selected_soldier = name
+                    # Check name input
+                    if name_input.collidepoint(mx, my):
+                        self.active_input = True
+                    else:
+                        self.active_input = False
                     if v_rect and v_rect.collidepoint(mx, my):
-                        return selected_name, selected_color
+                        return selected_name, selected_soldier
+                elif event.type == pygame.KEYDOWN and self.active_input:
+                    if event.key == pygame.K_BACKSPACE:
+                        selected_name = selected_name[:-1] if selected_name else ''
+                    elif event.key == pygame.K_RETURN:
+                        if selected_name and selected_soldier:
+                            return selected_name, selected_soldier
+                    elif len(selected_name or '') < 15 and event.unicode.isprintable():
+                        selected_name = (selected_name or '') + event.unicode
 
             clock.tick(60)
