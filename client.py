@@ -136,17 +136,18 @@ def main():
     receive_thread.start()
 
     clock = pygame.time.Clock()
+    last_update = pygame.time.get_ticks()
 
     running = True
     while running:
-        screen.fill((0, 0, 0))
-
-        # Gérer les événements
+        current_time = pygame.time.get_ticks()
+        
+        # Process events
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
 
-        # Gérer les mouvements
+        # Update game state every frame
         keys = pygame.key.get_pressed()
         if keys[pygame.K_LEFT]:
             player_x -= player_speed
@@ -161,10 +162,7 @@ def main():
         player_x = max(0, min(player_x, SCREEN_WIDTH - 50))
         player_y = max(0, min(player_y, SCREEN_HEIGHT - 50))
 
-        # Dessiner le joueur
-        pygame.draw.rect(screen, player_color, (player_x, player_y, 50, 50))
-
-        # Envoyer la position au serveur
+        # Send position update every frame
         try:
             data = pickle.dumps((player_x, player_y))
             client_socket.send(data)
@@ -172,14 +170,20 @@ def main():
             print(f"Error sending position: {e}")
             break
 
-        # Dessiner les autres joueurs
+        # Draw everything
+        screen.fill((0, 0, 0))
+        
+        # Draw other players first
         for other_id, other_player_pos in other_players.items():
             pygame.draw.rect(
                 screen,
                 (0, 255, 0),
                 (other_player_pos[0], other_player_pos[1], 50, 50)
             )
-
+        
+        # Draw current player on top
+        pygame.draw.rect(screen, player_color, (player_x, player_y, 50, 50))
+        
         pygame.display.flip()
         clock.tick(60)
 

@@ -44,6 +44,12 @@ class ClientThread(threading.Thread):
             if not self.send_data(('init', self.client_id)):
                 return
             
+            # Envoyer l'état actuel de tous les joueurs au nouveau client
+            for player_id, (_, player_pos) in players.items():
+                if player_id != self.client_id:  # Ne pas envoyer sa propre position
+                    if not self.send_data((player_id, player_pos)):
+                        return
+            
             while True:
                 data = self.client_socket.recv(1024)
                 if not data:
@@ -79,7 +85,7 @@ class ClientThread(threading.Thread):
                     try:
                         pickle.dumps(disconnect_message)
                         client_socket.send(pickle.dumps(disconnect_message))
-                    except:
+                    except socket.error:
                         pass
                 del players[self.client_id]
             if self.client_socket in client_sockets:
