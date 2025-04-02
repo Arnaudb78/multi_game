@@ -4,8 +4,8 @@ import threading
 import pickle
 
 # Configuration du client
-HOST = '127.0.0.1'
-PORT = 12345
+DEFAULT_HOST = '127.0.0.1'
+DEFAULT_PORT = 12345
 
 # Initialisation de Pygame
 pygame.init()
@@ -20,9 +20,12 @@ WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 RED = (255, 0, 0)
 GREEN = (0, 255, 0)
+GRAY = (128, 128, 128)
+BLUE = (0, 0, 255)
 
 # Police
 font = pygame.font.Font(None, 74)
+small_font = pygame.font.Font(None, 36)
 
 # Joueur
 player_x, player_y = 400, 300
@@ -33,6 +36,31 @@ client_id = None
 # Dictionnaire des autres joueurs
 other_players = {}  # {client_id: (x, y)}
 
+# Variables pour les champs de saisie
+host_input = DEFAULT_HOST
+port_input = str(DEFAULT_PORT)
+active_input = None
+cursor_visible = True
+cursor_timer = 0
+
+
+def draw_text_input(text, x, y, width, height, active):
+    # Draw input box
+    color = BLUE if active else GRAY
+    pygame.draw.rect(screen, color, (x, y, width, height), 2)
+    
+    # Draw text
+    text_surface = small_font.render(text, True, WHITE)
+    screen.blit(text_surface, (x + 5, y + 5))
+    
+    # Draw cursor if active
+    if active and cursor_visible:
+        cursor_x = x + 5 + text_surface.get_width()
+        pygame.draw.line(screen, WHITE, (cursor_x, y + 5), 
+                        (cursor_x, y + height - 5), 2)
+    
+    return pygame.Rect(x, y, width, height)
+
 
 def draw_menu():
     screen.fill(BLACK)
@@ -41,13 +69,50 @@ def draw_menu():
     title = font.render(
         'Jeu Shooter Multijoueur', True, WHITE
     )
-    title_rect = title.get_rect(center=(SCREEN_WIDTH/2, SCREEN_HEIGHT/3))
+    title_rect = title.get_rect(center=(SCREEN_WIDTH/2, SCREEN_HEIGHT/4))
     screen.blit(title, title_rect)
+    
+    # Input fields
+    input_height = 40
+    input_width = 200
+    spacing = 20
+    
+    # Host input
+    host_label = small_font.render('Host IP:', True, WHITE)
+    host_label_rect = host_label.get_rect(
+        center=(SCREEN_WIDTH/2 - input_width/2 - 50, SCREEN_HEIGHT/2 - 60)
+    )
+    screen.blit(host_label, host_label_rect)
+    
+    host_rect = draw_text_input(
+        host_input,
+        SCREEN_WIDTH/2 - input_width/2,
+        SCREEN_HEIGHT/2 - 60,
+        input_width,
+        input_height,
+        active_input == 'host'
+    )
+    
+    # Port input
+    port_label = small_font.render('Port:', True, WHITE)
+    port_label_rect = port_label.get_rect(
+        center=(SCREEN_WIDTH/2 - input_width/2 - 50, SCREEN_HEIGHT/2)
+    )
+    screen.blit(port_label, port_label_rect)
+    
+    port_rect = draw_text_input(
+        port_input,
+        SCREEN_WIDTH/2 - input_width/2,
+        SCREEN_HEIGHT/2,
+        input_width,
+        input_height,
+        active_input == 'port'
+    )
     
     # Bouton Start
     start_button = font.render('Start Game', True, WHITE)
     start_rect = start_button.get_rect(
-        center=(SCREEN_WIDTH/2, SCREEN_HEIGHT/2)
+        center=(SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 80)
     )
     pygame.draw.rect(screen, GREEN, start_rect.inflate(20, 20))
     screen.blit(start_button, start_rect)
@@ -55,13 +120,13 @@ def draw_menu():
     # Bouton Quit
     quit_button = font.render('Quit', True, WHITE)
     quit_rect = quit_button.get_rect(
-        center=(SCREEN_WIDTH/2, 2*SCREEN_HEIGHT/3)
+        center=(SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 160)
     )
     pygame.draw.rect(screen, RED, quit_rect.inflate(20, 20))
     screen.blit(quit_button, quit_rect)
     
     pygame.display.flip()
-    return start_rect, quit_rect
+    return start_rect, quit_rect, host_rect, port_rect
 
 
 def receive_data(client_socket):
@@ -104,12 +169,18 @@ def receive_data(client_socket):
 
 
 def main():
-    global player_x, player_y
+    global player_x, player_y, host_input, port_input, active_input, cursor_visible, cursor_timer
     
     # Menu principal
     menu_running = True
     while menu_running:
-        start_rect, quit_rect = draw_menu()
+        start_rect, quit_rect, host_rect, port_rect = draw_menu()
+        
+        # Update cursor blink
+        current_time = pygame.time.get_ticks()
+        if current_time - cursor_timer > 500:  # Toggle every 500ms
+            cursor_visible = not cursor_visible
+            cursor_timer = current_time
         
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -122,10 +193,38 @@ def main():
                 elif quit_rect.collidepoint(mouse_pos):
                     pygame.quit()
                     return
+                elif host_rect.collidepoint(mouse_pos):
+                    active_input = 'host'
+                elif port_rect.collidepoint(mouse_pos):
+                    active_input = 'port'
+                else:
+                    active_input = None
+            elif event.type == pygame.KEYDOWN:
+                if active_input == 'host':
+                    if event.key == pygame.K_BACKSPACE:
+                        host_input = host_input[:-1]
+                    elif event.key == pygame.K_RETURN:
+                        active_input = 'port'
+                    elif len(host_input) < 15:  # Limit IP length
+                        if event.unicode.isprintable():
+                            host_input += event.unicode
+                elif active_input == 'port':
+                    if event.key == pygame.K_BACKSPACE:
+                        port_input = port_input[:-1]
+                    elif event.key == pygame.K_RETURN:
+                        active_input = None
+                    elif len(port_input) < 5 and event.unicode.isdigit():
+                        port_input += event.unicode
 
     # Connexion au serveur
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    client_socket.connect((HOST, PORT))
+    try:
+        port = int(port_input)
+        client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client_socket.connect((host_input, port))
+    except Exception as e:
+        print(f"Connection error: {e}")
+        pygame.quit()
+        return
 
     # Lancer le thread de réception
     receive_thread = threading.Thread(
