@@ -1,4 +1,5 @@
 import pygame
+import pyperclip  # ✅ Nécessaire pour accéder au presse-papier
 
 # Init Pygame
 pygame.init()
@@ -61,8 +62,8 @@ class Menu:
             self.screen.blit(join_button, join_rect)
 
             if self.mode == 'join':
-                label = small_font.render("IP de l’hôte :", True, WHITE)
-                self.screen.blit(label, (width/2 - 150, height/2 + 120))
+                label = small_font.render("IP :", True, WHITE)
+                self.screen.blit(label, (width/2 - 100, height/2 + 120))
                 self.input_rect = self.draw_input(self.ip_input, width/2 - 50, height/2 + 115, 200, 40, self.active_input)
 
                 continue_button = small_font.render('Se connecter', True, WHITE)
@@ -94,7 +95,15 @@ class Menu:
                         self.ip_input = self.ip_input[:-1]
                     elif event.key == pygame.K_RETURN:
                         return 'join', self.ip_input.strip()
-                    elif len(self.ip_input) < 15 and event.unicode.isprintable():
+                    elif event.key == pygame.K_v and pygame.key.get_mods() & pygame.KMOD_CTRL:
+                        # ✅ Collage depuis le presse-papier
+                        try:
+                            clipboard = pyperclip.paste()
+                            if isinstance(clipboard, str):
+                                self.ip_input += clipboard
+                        except Exception as e:
+                            print("Erreur lors du collage :", e)
+                    elif len(self.ip_input) < 30 and event.unicode.isprintable():
                         self.ip_input += event.unicode
 
             clock.tick(60)
@@ -106,7 +115,7 @@ class Menu:
             self.cursor_timer = current_time
 
     def show_profile_selection(self):
-        pseudonyms = ['Falcon', 'Ninja', 'Rogue', 'Blaze', 'Viper']
+        pseudonyms = ['Paul', 'Arnaud', 'Fatima', 'Manal', 'Loris', 'Elena', 'Thomas', 'Emma', 'Chainez', 'Oceane', 'Marianne', 'Jules', 'Jamal']
         colors = [RED, GREEN, BLUE, YELLOW, MAGENTA]
         selected_name = None
         selected_color = None
