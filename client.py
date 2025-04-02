@@ -15,6 +15,15 @@ SCREEN_WIDTH, SCREEN_HEIGHT = 800, 600
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
 pygame.display.set_caption('Jeu Shooter Multijoueur')
 
+# Couleurs
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+RED = (255, 0, 0)
+GREEN = (0, 255, 0)
+
+# Police
+font = pygame.font.Font(None, 74)
+
 # Joueur
 player_x, player_y = 400, 300
 player_speed = 5
@@ -23,6 +32,36 @@ client_id = None
 
 # Dictionnaire des autres joueurs
 other_players = {}  # {client_id: (x, y)}
+
+
+def draw_menu():
+    screen.fill(BLACK)
+    
+    # Titre
+    title = font.render(
+        'Jeu Shooter Multijoueur', True, WHITE
+    )
+    title_rect = title.get_rect(center=(SCREEN_WIDTH/2, SCREEN_HEIGHT/3))
+    screen.blit(title, title_rect)
+    
+    # Bouton Start
+    start_button = font.render('Start Game', True, WHITE)
+    start_rect = start_button.get_rect(
+        center=(SCREEN_WIDTH/2, SCREEN_HEIGHT/2)
+    )
+    pygame.draw.rect(screen, GREEN, start_rect.inflate(20, 20))
+    screen.blit(start_button, start_rect)
+    
+    # Bouton Quit
+    quit_button = font.render('Quit', True, WHITE)
+    quit_rect = quit_button.get_rect(
+        center=(SCREEN_WIDTH/2, 2*SCREEN_HEIGHT/3)
+    )
+    pygame.draw.rect(screen, RED, quit_rect.inflate(20, 20))
+    screen.blit(quit_button, quit_rect)
+    
+    pygame.display.flip()
+    return start_rect, quit_rect
 
 
 def receive_data(client_socket):
@@ -53,6 +92,23 @@ def receive_data(client_socket):
 
 def main():
     global player_x, player_y
+    
+    # Menu principal
+    menu_running = True
+    while menu_running:
+        start_rect, quit_rect = draw_menu()
+        
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                return
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                mouse_pos = event.pos
+                if start_rect.collidepoint(mouse_pos):
+                    menu_running = False
+                elif quit_rect.collidepoint(mouse_pos):
+                    pygame.quit()
+                    return
 
     # Connexion au serveur
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
