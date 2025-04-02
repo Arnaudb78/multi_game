@@ -5,6 +5,7 @@ import pickle
 import uuid
 import logging
 from menu import Menu
+from map_manager import MapManager
 
 # Configuration du jeu
 DEFAULT_PORT = 12345
@@ -27,9 +28,19 @@ logger = logging.getLogger(__name__)
 client_id = None
 other_players = {}  # {client_id: (x, y, pseudo, couleur)}
 
+# Camera
+camera_x = 0
+camera_y = 0
+camera_speed = 0.1
+
+# Map
+map_manager = MapManager("assets/map/map.tmx")
+map_width, map_height = map_manager.get_map_size()
+
 # === SERVER CODE ===
 players = {}  # {client_id: (socket, position, pseudo, couleur)}
 client_sockets = {}  # {socket: client_id}
+
 
 class ClientThread(threading.Thread):
     def __init__(self, client_socket, client_address):
@@ -94,17 +105,28 @@ class ClientThread(threading.Thread):
 
 def start_server():
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.bind(('0.0.0.0', DEFAULT_PORT))
-    server_socket.listen(5)
-    logger.info(f"Serveur démarré sur le port {DEFAULT_PORT}")
-    while True:
-        try:
-            client_socket, addr = server_socket.accept()
-            logger.info(f"Connexion de {addr}")
-            thread = ClientThread(client_socket, addr)
-            thread.start()
-        except:
-            break
+    try:
+        # Enable port reuse
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_socket.bind(('0.0.0.0', DEFAULT_PORT))
+        server_socket.listen(5)
+        logger.info(f"Serveur démarré sur le port {DEFAULT_PORT}")
+        
+        while True:
+            try:
+                client_socket, addr = server_socket.accept()
+                logger.info(f"Connexion de {addr}")
+                thread = ClientThread(client_socket, addr)
+                thread.start()
+            except socket.error as e:
+                logger.error(f"Erreur d'acceptation de connexion: {e}")
+                break
+    except socket.error as e:
+        logger.error(f"Erreur de démarrage du serveur: {e}")
+        return
+    finally:
+        server_socket.close()
+
 
 # === CLIENT CODE ===
 def receive_data(sock):
@@ -135,8 +157,9 @@ def receive_data(sock):
             print(f"Erreur réception: {e}")
             break
 
+
 def main():
-    global SCREEN_WIDTH, SCREEN_HEIGHT
+    global SCREEN_WIDTH, SCREEN_HEIGHT, camera_x, camera_y
     player_x, player_y = 400, 300
 
     menu = Menu(screen)
@@ -179,8 +202,21 @@ def main():
         if keys[pygame.K_UP]: player_y -= player_speed
         if keys[pygame.K_DOWN]: player_y += player_speed
 
-        player_x = max(0, min(player_x, SCREEN_WIDTH - 50))
-        player_y = max(0, min(player_y, SCREEN_HEIGHT - 50))
+        # Clamp player position to map boundaries
+        player_x = max(0, min(player_x, map_width - 50))
+        player_y = max(0, min(player_y, map_height - 50))
+
+        # Update camera to follow player smoothly
+        target_camera_x = player_x - SCREEN_WIDTH // 2
+        target_camera_y = player_y - SCREEN_HEIGHT // 2
+
+        # Clamp camera to map boundaries
+        target_camera_x = max(0, min(target_camera_x, map_width - SCREEN_WIDTH))
+        target_camera_y = max(0, min(target_camera_y, map_height - SCREEN_HEIGHT))
+
+        # Smooth camera movement
+        camera_x += (target_camera_x - camera_x) * camera_speed
+        camera_y += (target_camera_y - camera_y) * camera_speed
 
         try:
             msg = {'position': (player_x, player_y), 'pseudo': pseudo, 'color': color}
@@ -189,14 +225,20 @@ def main():
             break
 
         screen.fill((0, 0, 0))
+        
+        # Draw map
+        map_manager.draw(screen, camera_x, camera_y)
+        
+        # Draw other players
         for pid, (pos, name, col) in other_players.items():
-            pygame.draw.rect(screen, col, (pos[0], pos[1], 50, 50))
+            pygame.draw.rect(screen, col, (pos[0] - camera_x, pos[1] - camera_y, 50, 50))
             label = font.render(name, True, WHITE)
-            screen.blit(label, (pos[0], pos[1] - 20))
+            screen.blit(label, (pos[0] - camera_x, pos[1] - camera_y - 20))
 
-        pygame.draw.rect(screen, color, (player_x, player_y, 50, 50))
+        # Draw current player
+        pygame.draw.rect(screen, color, (player_x - camera_x, player_y - camera_y, 50, 50))
         label = font.render(pseudo, True, WHITE)
-        screen.blit(label, (player_x, player_y - 20))
+        screen.blit(label, (player_x - camera_x, player_y - camera_y - 20))
 
         pygame.display.flip()
         clock.tick(60)
