@@ -1,0 +1,32 @@
+{
+    "activeFile": "",
+    "expandedProjectPaths": [
+        "."
+    ],
+    "fileStates": {
+        "building.tsx": {
+            "scaleInDock": 2.43,
+            "scaleInEditor": 1
+        },
+        "map.tmx": {
+            "scale": 0.6637,
+            "selectedLayer": 0,
+            "viewCenter": {
+                "x": 498.7193008889559,
+                "y": -146.150369142685
+            }
+        },
+        "map.tsx": {
+            "scaleInDock": 1.8329,
+            "scaleInEditor": 1
+        }
+    },
+    "openFiles": [
+    ],
+    "project": "",
+    "recentFiles": [
+        "building.tsx",
+        "map.tsx",
+        "map.tmx"
+    ]
+}

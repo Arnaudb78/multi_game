@@ -3,6 +3,7 @@ import socket
 import threading
 import pickle
 from menu import Menu
+from map_manager import MapManager
 
 # Configuration du client
 DEFAULT_HOST = '127.0.0.1'
@@ -11,7 +12,7 @@ DEFAULT_PORT = 12345
 # Initialisation de Pygame
 pygame.init()
 
-# Dimensions de la fenêtre du jeu
+# Dimensions de la fenêtre du jeu (plus petite pour voir une portion du map)
 SCREEN_WIDTH, SCREEN_HEIGHT = 800, 600
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
 pygame.display.set_caption('Jeu Shooter Multijoueur')
@@ -34,8 +35,17 @@ player_speed = 5
 player_color = (255, 0, 0)  # Rouge pour le joueur
 client_id = None
 
+# Camera
+camera_x = 0
+camera_y = 0
+camera_speed = 0.1  # Vitesse de la caméra (plus petit = plus fluide)
+
 # Dictionnaire des autres joueurs
 other_players = {}  # {client_id: (x, y)}
+
+# Map
+map_manager = MapManager("assets/map/map.tmx")
+map_width, map_height = map_manager.get_map_size()
 
 
 def draw_text_input(text, x, y, width, height, active):
@@ -163,7 +173,7 @@ def receive_data(client_socket):
 
 
 def main():
-    global player_x, player_y
+    global player_x, player_y, camera_x, camera_y
     
     # Menu principal
     menu = Menu(screen, DEFAULT_HOST, str(DEFAULT_PORT))
@@ -227,9 +237,21 @@ def main():
         if keys[pygame.K_DOWN]:
             player_y += player_speed
 
-        # Limiter les mouvements aux bords de l'écran
-        player_x = max(0, min(player_x, SCREEN_WIDTH - 50))
-        player_y = max(0, min(player_y, SCREEN_HEIGHT - 50))
+        # Clamp player position to map boundaries
+        player_x = max(0, min(player_x, map_width - 50))
+        player_y = max(0, min(player_y, map_height - 50))
+
+        # Update camera to follow player smoothly
+        target_camera_x = player_x - SCREEN_WIDTH // 2
+        target_camera_y = player_y - SCREEN_HEIGHT // 2
+
+        # Clamp camera to map boundaries
+        target_camera_x = max(0, min(target_camera_x, map_width - SCREEN_WIDTH))
+        target_camera_y = max(0, min(target_camera_y, map_height - SCREEN_HEIGHT))
+
+        # Smooth camera movement
+        camera_x += (target_camera_x - camera_x) * camera_speed
+        camera_y += (target_camera_y - camera_y) * camera_speed
 
         # Send position update every frame
         try:
@@ -240,18 +262,21 @@ def main():
             break
 
         # Draw everything
-        screen.fill((0, 0, 0))
+        screen.fill(BLACK)
+        
+        # Draw map
+        map_manager.draw(screen, camera_x, camera_y)
         
         # Draw other players first
         for other_id, other_player_pos in other_players.items():
             pygame.draw.rect(
                 screen,
                 (0, 255, 0),
-                (other_player_pos[0], other_player_pos[1], 50, 50)
+                (other_player_pos[0] - camera_x, other_player_pos[1] - camera_y, 50, 50)
             )
         
         # Draw current player on top
-        pygame.draw.rect(screen, player_color, (player_x, player_y, 50, 50))
+        pygame.draw.rect(screen, player_color, (player_x - camera_x, player_y - camera_y, 50, 50))
         
         pygame.display.flip()
         clock.tick(60)
