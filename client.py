@@ -9,7 +9,7 @@ from map_manager import MapManager
 
 # Configuration du jeu
 DEFAULT_PORT = 12345
-SCREEN_WIDTH, SCREEN_HEIGHT = 800, 600
+SCREEN_WIDTH, SCREEN_HEIGHT = 1200, 900
 player_speed = 5
 
 WHITE = (255, 255, 255)
