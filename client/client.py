@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 # Variables globales
 client_id = None
 other_players = {}  # {client_id: (x, y, pseudo, soldier_type)}
+other_soldiers = {}  # Cache for other players' Soldier objects
 player = None
 
 # Camera
@@ -164,7 +165,7 @@ def receive_data(sock):
 
 
 def main():
-    global SCREEN_WIDTH, SCREEN_HEIGHT, camera_x, camera_y, player
+    global SCREEN_WIDTH, SCREEN_HEIGHT, camera_x, camera_y, player, other_soldiers
     player_x, player_y = 400, 300
 
     menu = Menu(screen)
@@ -240,8 +241,19 @@ def main():
         
         # Draw other players
         for pid, (pos, name, soldier_type) in other_players.items():
-            other_soldier = Soldier(pos[0], pos[1], soldier_type, name)
-            other_soldier.draw(screen, camera_x, camera_y)
+            if pid not in other_soldiers:
+                # Create new soldier object only if it doesn't exist
+                other_soldiers[pid] = Soldier(pos[0], pos[1], soldier_type, name)
+            else:
+                # Update existing soldier's position
+                other_soldiers[pid].x = pos[0]
+                other_soldiers[pid].y = pos[1]
+            other_soldiers[pid].draw(screen, camera_x, camera_y)
+
+        # Clean up disconnected players
+        disconnected_players = set(other_soldiers.keys()) - set(other_players.keys())
+        for pid in disconnected_players:
+            del other_soldiers[pid]
 
         # Draw current player
         player.draw(screen, camera_x, camera_y)

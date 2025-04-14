@@ -3,11 +3,14 @@ import threading
 import logging
 import pickle
 import uuid
+import time
 
 
 # Configuration du serveur
 HOST = '0.0.0.0'  # Adresse de connection
 PORT = 12345        # Port à utiliser
+BUFFER_SIZE = 8192  # Increased buffer size
+UPDATE_RATE = 30    # Updates per second
 
 # Configuration du logging
 logging.basicConfig(
@@ -50,8 +53,9 @@ class ClientThread(threading.Thread):
                     if not self.send_data((player_id, player_pos)):
                         return
             
+            last_update = 0
             while True:
-                data = self.client_socket.recv(1024)
+                data = self.client_socket.recv(BUFFER_SIZE)
                 if not data:
                     break
 
@@ -63,16 +67,20 @@ class ClientThread(threading.Thread):
                     logger.error(f"Error processing player position: {e}")
                     continue
 
-                # Envoyer les positions de tous les joueurs à tous les clients
-                for client_socket in client_sockets.keys():
-                    try:
-                        # Envoyer toutes les positions à ce client
-                        for player_id, (_, player_pos) in players.items():
-                            if not self.send_data((player_id, player_pos)):
-                                break
-                    except socket.error as e:
-                        logger.error(f"Error sending data to client: {e}")
-                        break
+                # Rate limit updates
+                current_time = time.time()
+                if current_time - last_update >= 1.0 / UPDATE_RATE:
+                    last_update = current_time
+                    # Envoyer les positions de tous les joueurs à tous les clients
+                    for client_socket in client_sockets.keys():
+                        try:
+                            # Envoyer toutes les positions à ce client
+                            for player_id, (_, player_pos) in players.items():
+                                if not self.send_data((player_id, player_pos)):
+                                    break
+                        except socket.error as e:
+                            logger.error(f"Error sending data to client: {e}")
+                            break
 
         except socket.error as e:
             logger.error(f"Error in client thread: {e}")
