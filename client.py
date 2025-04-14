@@ -153,10 +153,18 @@ def receive_data(sock):
                     elif msg[0] == 'player':
                         pid, pos, health = msg[1:]
                         if pid != client_id:
-                            other_players[pid] = (pos[0], pos[1], other_players[pid][2], other_players[pid][3], health)
-                            if pid in other_soldiers:
-                                other_soldiers[pid].x = pos[0]
-                                other_soldiers[pid].y = pos[1]
+                            # Update or create player data
+                            if pid in other_players:
+                                # Update existing player
+                                other_players[pid] = (pos[0], pos[1], other_players[pid][2], other_players[pid][3], health)
+                                if pid in other_soldiers:
+                                    other_soldiers[pid].x = pos[0]
+                                    other_soldiers[pid].y = pos[1]
+                                    other_soldiers[pid].health = health
+                            else:
+                                # Create new player
+                                other_players[pid] = (pos[0], pos[1], "Player", "Falcon", health)  # Default values
+                                other_soldiers[pid] = Soldier(pos[0], pos[1], "Falcon", "Player")
                                 other_soldiers[pid].health = health
                     elif msg[0] == 'bullet':
                         # Add or update bullet
