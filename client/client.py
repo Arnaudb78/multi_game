@@ -659,9 +659,6 @@ def check_shot_collisions():
                     damage = shot.get('damage', 10) if shot.get('is_tank_shot') else 10
                     player.take_damage(damage)
                     
-                    # Create explosion effect at impact point
-                    create_explosion(shot['position'], is_tank=shot.get('is_tank_shot', False))
-                    
                     # Play hit sound
                     play_hit_sound()
                     
@@ -695,12 +692,8 @@ def check_shot_collisions():
                     # Apply damage to vehicle (less damage than to a player)
                     damage = shot.get('damage', 5) if shot.get('is_tank_shot') else 5
                     current_vehicle.take_damage(damage)
-                    
-                    # Create explosion effect at impact point - bigger for tank
-                    create_explosion(shot['position'], is_tank=True)
-                    
-                    # Play vehicle hit sound directly in addition to explosion
-                    play_explosion_sound(is_tank=True)
+                    current_vehicle.show_damaged = True  # Flag to show tank is taking damage
+                    current_vehicle.damage_timer = 30  # Number of frames to show slow health change
                     
                     # Send updated position with vehicle health
                     if sock_global:
@@ -720,9 +713,6 @@ def check_shot_collisions():
                     if shot_rect.colliderect(other_rect):
                         logger.info(f"Tir {shot_id} a touché le joueur {other_id}!")
                         shots_to_remove.append(shot_id)
-                        
-                        # Create explosion effect at impact point
-                        create_explosion(shot['position'], is_tank=shot.get('is_tank_shot', False))
                         
                         # Determine damage - higher for tank shots
                         damage = shot.get('damage', 10) if shot.get('is_tank_shot') else 10
@@ -756,8 +746,9 @@ def check_shot_collisions():
                                         logger.info(f"Tir {shot_id} a touché le véhicule de {pid}!")
                                         shots_to_remove.append(shot_id)
                                         
-                                        # Create explosion effect at impact point - bigger for tank
-                                        create_explosion(shot['position'], is_tank=True)
+                                        # Indicate to show visual damage
+                                        vehicle.show_damaged = True
+                                        vehicle.damage_timer = 30
                                         
                                         # Damage is handled on the target's client
                                         # We just send a vehicle hit notification
@@ -1074,9 +1065,6 @@ def main():
         # Mise à jour des tirs
         update_shots()
         
-        # Update explosion animations
-        update_explosions()
-        
         # Periodically clean up duplicate vehicles (every ~5 seconds)
         if pygame.time.get_ticks() % 5000 < 50:
             cleanup_vehicles()
@@ -1133,9 +1121,6 @@ def main():
         
         # Dessiner les tirs
         draw_shots(screen, camera_x, camera_y)
-        
-        # Draw explosion animations
-        draw_explosions(screen, camera_x, camera_y)
         
         # Dessiner le joueur local s'il est vivant et pas dans un véhicule
         if (player.health > 0 or player.state != SoldierState.DEAD) and not player_in_vehicle:
@@ -1241,68 +1226,6 @@ def send_vehicle_hit_notification(sock, target_id, damage):
     except Exception as e:
         log_exception(e, "Erreur lors de l'envoi de la notification de dégâts au véhicule")
         return False
-
-def update_explosions():
-    """Updates all active explosions and removes finished ones"""
-    global active_explosions
-    
-    explosions_to_remove = []
-    
-    # Update each explosion's frame
-    for i, (pos, current_frame, size, is_tank) in enumerate(active_explosions):
-        # Advance the frame
-        current_frame += 1
-        
-        # If we've reached the end of the animation, mark for removal
-        if current_frame >= len(explosion_images):
-            explosions_to_remove.append(i)
-        else:
-            # Otherwise update the frame
-            active_explosions[i] = (pos, current_frame, size, is_tank)
-    
-    # Remove finished explosions (in reverse order to preserve indices)
-    for i in sorted(explosions_to_remove, reverse=True):
-        if i < len(active_explosions):
-            active_explosions.pop(i)
-
-def draw_explosions(screen, camera_x, camera_y):
-    """Draws all active explosions"""
-    for pos, current_frame, size, is_tank in active_explosions:
-        if current_frame < len(explosion_images):
-            # Get the explosion image for this frame
-            explosion_img = explosion_images[current_frame]
-            
-            # Scale the explosion based on size parameter and if it's a tank explosion
-            scale = 1.0
-            if is_tank:
-                scale = 2.0  # Bigger explosion for tanks
-            
-            scaled_size = (int(explosion_img.get_width() * scale * size), 
-                          int(explosion_img.get_height() * scale * size))
-            
-            # Only scale if needed
-            if scale * size != 1.0:
-                explosion_img = pygame.transform.scale(explosion_img, scaled_size)
-            
-            # Draw the explosion
-            draw_x = int(pos[0] - camera_x - explosion_img.get_width() // 2)
-            draw_y = int(pos[1] - camera_y - explosion_img.get_height() // 2)
-            screen.blit(explosion_img, (draw_x, draw_y))
-
-def create_explosion(position, is_tank=False):
-    """Creates a new explosion at the given position"""
-    # Size between 0.8 and 1.2, bigger for tank shots
-    size = random.uniform(0.8, 1.2)
-    if is_tank:
-        size *= 1.5
-    
-    # Add to active explosions list
-    active_explosions.append((position, 0, size, is_tank))
-    
-    # Play appropriate sound effect
-    play_explosion_sound(is_tank)
-    
-    logger.info(f"Created explosion at {position}, size={size}, is_tank={is_tank}")
 
 if __name__ == "__main__":
     main()

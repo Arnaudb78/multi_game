@@ -30,12 +30,16 @@ class Vehicle:
         self.map_height = map_height
         self.health = 100
         self.max_health = 100
+        self.display_health = 100  # For animation
+        self.show_damaged = False  # Flag to show damage animation
+        self.damage_timer = 0  # Timer for showing the health bar depleting
         self.images = {}
         self.current_image = None
         self.load_images()
         self.interaction_distance = 100  # Distance for player to interact with vehicle
         self.hitbox_width = 0
         self.hitbox_height = 0
+        self.player_nearby = False
 
     def load_images(self):
         # Base method to be overridden by specific vehicle types
@@ -100,8 +104,23 @@ class Vehicle:
         bar_width = 60  # Wider bar
         bar_height = 8  # Taller bar for better visibility
         
-        # Calculate health percentage
-        health_percentage = self.health / self.max_health
+        # Update display health for smooth animation
+        if self.damage_timer > 0:
+            self.damage_timer -= 1
+            
+            # Gradually decrease display health to match actual health
+            if self.display_health > self.health:
+                self.display_health -= (self.display_health - self.health) / (self.damage_timer + 1)
+                if abs(self.display_health - self.health) < 0.1:
+                    self.display_health = self.health
+            
+            # Reset timer when done
+            if self.damage_timer <= 0 or self.display_health <= self.health:
+                self.show_damaged = False
+                self.display_health = self.health
+        
+        # Calculate health percentage based on display health
+        health_percentage = self.display_health / self.max_health
         
         # Add a black outline for better visibility
         pygame.draw.rect(
@@ -131,6 +150,12 @@ class Vehicle:
             color,
             (x, y - 15, int(bar_width * health_percentage), bar_height)
         )
+        
+        # Show health value when tank is being damaged
+        if self.show_damaged:
+            font = pygame.font.Font(None, 20)
+            health_text = font.render(f"{int(self.display_health)}/{self.max_health}", True, (255, 255, 255))
+            screen.blit(health_text, (x + bar_width + 5, y - 17))
 
     def draw(self, screen, camera_x, camera_y):
         if self.current_image:
@@ -155,7 +180,13 @@ class Vehicle:
 
     def take_damage(self, damage):
         """Applies damage to the vehicle and returns whether it was destroyed"""
+        old_health = self.health
         self.health = max(0, self.health - damage)
+        
+        # Initialize damage animation
+        self.show_damaged = True
+        self.damage_timer = 40  # Show health change for 40 frames (slow depletion)
+        
         return self.health <= 0
 
 
