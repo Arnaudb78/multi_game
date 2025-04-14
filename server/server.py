@@ -24,7 +24,7 @@ players = {}  # {client_id: (socket, position)}
 client_sockets = {}  # {socket: client_id}
 
 # Dictionnaire des tirs actifs
-shots = {}  # {shot_id: (position, direction, speed)}
+shots = {}  # {shot_id: {'position': (x, y), 'direction': (dx, dy), 'speed': s, 'player_id': pid}}
 
 
 class ClientThread(threading.Thread):
@@ -68,7 +68,17 @@ class ClientThread(threading.Thread):
                     if isinstance(data, dict) and 'shot' in data:
                         # Gérer un nouveau tir
                         shot_id = str(uuid.uuid4())
-                        shots[shot_id] = data['shot']
+                        shot_data = data['shot']
+                        # Ajouter l'ID du joueur qui a tiré
+                        shot_data['player_id'] = self.client_id
+                        shots[shot_id] = shot_data
+                        
+                        # Envoyer immédiatement le tir à tous les clients
+                        for client_socket in client_sockets.keys():
+                            try:
+                                client_socket.send(pickle.dumps(('shot', shot_id, shot_data)))
+                            except socket.error:
+                                continue
                     else:
                         # Mettre à jour la position du joueur
                         position = data
@@ -77,16 +87,12 @@ class ClientThread(threading.Thread):
                     logger.error(f"Error processing player data: {e}")
                     continue
 
-                # Envoyer les positions de tous les joueurs et les tirs à tous les clients
+                # Envoyer les positions de tous les joueurs à tous les clients
                 for client_socket in client_sockets.keys():
                     try:
                         # Envoyer toutes les positions à ce client
                         for player_id, (_, player_pos) in players.items():
                             if not self.send_data((player_id, player_pos)):
-                                break
-                        # Envoyer tous les tirs à ce client
-                        for shot_id, shot_data in shots.items():
-                            if not self.send_data(('shot', shot_id, shot_data)):
                                 break
                     except socket.error as e:
                         logger.error(f"Error sending data to client: {e}")
