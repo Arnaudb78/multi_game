@@ -9,7 +9,6 @@ import os
 import time
 import traceback
 import random
-import io
 
 # Add the parent directory to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -26,7 +25,6 @@ except ImportError:
 from menu import Menu
 from game.map_manager import MapManager
 from game.soldier import Soldier, SoldierDirection, SoldierState
-from game.vehicle import Vehicle, Tank, VehicleDirection
 
 # Configuration du jeu
 DEFAULT_PORT = 12345
@@ -58,30 +56,16 @@ client_id = None
 other_players = {}  # {client_id: (x, y, pseudo, soldier_type)}
 other_soldiers = {}  # Cache for other players' Soldier objects
 player = None
-player_in_vehicle = False
-current_vehicle = None
-
-# List of vehicles on the map
-vehicles = []
 
 # Camera
 camera_x = 0
 camera_y = 0
 camera_speed = 0.1
 
-# Sound effects
-explosion_sound = None
-hit_sound = None
-tank_hit_sound = None
-
 # Map
 map_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets', 'map', 'map.tmx')
 map_manager = MapManager(map_path)
 map_width, map_height = map_manager.get_map_size()
-
-# Spawn tanks on the map (fixed positions for now)
-vehicles.append(Tank(200, 200, map_width, map_height))  # First tank
-vehicles.append(Tank(600, 400, map_width, map_height))  # Second tank
 
 # Variables globales pour les tirs
 shots = {}  # {shot_id: {'position': (x, y), 'direction': (dx, dy), 'speed': s, 'player_id': pid}}
@@ -191,17 +175,6 @@ def receive_data(sock):
                     player_id = message[1]
                     with data_lock:
                         if player_id in other_players:
-                            # Check if disconnected player was in a vehicle
-                            player_data = other_players[player_id]
-                            if len(player_data) >= 5 and player_data[3]:  # in_vehicle flag
-                                # Mark vehicles that might've been used by this player as unoccupied
-                                if player_data[4]:  # vehicle_type
-                                    veh_type = player_data[4]
-                                    for v in vehicles:
-                                        if v.vehicle_type.value == veh_type and v.occupied:
-                                            v.occupied = False
-                                            logger.info(f"Marked vehicle as unoccupied due to player disconnect: {player_id}")
-                            
                             logger.info(f"Joueur déconnecté: {player_id}")
                             del other_players[player_id]
                         
@@ -273,35 +246,6 @@ def receive_data(sock):
                             
                         logger.info(f"Joueur {target_id} touché par {shooter_id} pour {damage} dégâts. Santé: {new_health}")
                 
-                # Message de notification de dégâts au véhicule
-                elif isinstance(message, tuple) and len(message) >= 2 and message[0] == 'vehicle_hit':
-                    hit_data = message[1]
-                    target_id = hit_data.get('target_id')
-                    shooter_id = hit_data.get('shooter_id')
-                    damage = hit_data.get('damage', 0)
-                    
-                    # Si nous sommes la cible et que nous sommes dans un véhicule
-                    if target_id == client_id and player_in_vehicle and current_vehicle:
-                        # Appliquer les dégâts au véhicule
-                        current_vehicle.take_damage(damage)
-                        logger.info(f"Votre véhicule a été touché par {shooter_id} pour {damage} dégâts. Santé du véhicule: {current_vehicle.health}")
-                        
-                        # Envoyer une mise à jour de position avec les informations du véhicule
-                        if sock_global:
-                            send_player_position(sock_global, player)
-                            
-                        # If vehicle is destroyed, force player out
-                        if current_vehicle.health <= 0:
-                            player_exited = current_vehicle.exit_vehicle()
-                            if player_exited:
-                                player_in_vehicle = False
-                                current_vehicle.occupied = False
-                                current_vehicle = None
-                                
-                                # Force position update after exiting destroyed vehicle
-                                if sock_global:
-                                    send_player_position(sock_global, player)
-                
                 # Message de position (format complet avec vehicle info)
                 elif isinstance(message, tuple) and len(message) >= 2:
                     player_id = message[0]
@@ -316,60 +260,9 @@ def receive_data(sock):
                                 pseudo = player_data.get('pseudo')
                                 soldier_type = player_data.get('soldier_type')
                                 health = player_data.get('health', 100)
-                                in_vehicle = player_data.get('in_vehicle', False)
-                                vehicle_type = player_data.get('vehicle_type')
-                                vehicle_id = player_data.get('vehicle_id')
-                                vehicle_position = player_data.get('vehicle_position')
-                                vehicle_direction = player_data.get('vehicle_direction')
-                                vehicle_health = player_data.get('vehicle_health')
                                 
                                 # Store player info
-                                other_players[player_id] = (position, pseudo, soldier_type, in_vehicle, vehicle_type)
-                                
-                                # Update or create vehicle if player is in one
-                                if in_vehicle and vehicle_position and vehicle_type and vehicle_direction:
-                                    # Check if this vehicle belongs to another player
-                                    vehicle_found = False
-                                    for v in vehicles:
-                                        # Match by position (within a small radius) or by ID
-                                        distance = ((v.x - vehicle_position[0])**2 + (v.y - vehicle_position[1])**2)**0.5
-                                        if distance < 30:  # If within 30 pixels, consider it the same vehicle
-                                            v.x = vehicle_position[0]
-                                            v.y = vehicle_position[1]
-                                            v.direction = VehicleDirection(vehicle_direction)
-                                            v.occupied = True
-                                            # Update vehicle health if provided
-                                            if vehicle_health is not None:
-                                                v.health = vehicle_health
-                                            vehicle_found = True
-                                            break
-                                    
-                                    # If vehicle not found, create a new one based on type
-                                    if not vehicle_found:
-                                        # Check if there's already a vehicle at this position
-                                        for v in vehicles:
-                                            if abs(v.x - vehicle_position[0]) < 50 and abs(v.y - vehicle_position[1]) < 50:
-                                                # Found a vehicle nearby, just update it
-                                                v.x = vehicle_position[0]
-                                                v.y = vehicle_position[1]
-                                                v.direction = VehicleDirection(vehicle_direction)
-                                                v.occupied = True
-                                                # Update vehicle health if provided
-                                                if vehicle_health is not None:
-                                                    v.health = vehicle_health
-                                                vehicle_found = True
-                                                break
-                                        
-                                        # Only create a new vehicle if really not found
-                                        if not vehicle_found and vehicle_type == "tank":
-                                            new_vehicle = Tank(vehicle_position[0], vehicle_position[1], map_width, map_height)
-                                            new_vehicle.direction = VehicleDirection(vehicle_direction)
-                                            new_vehicle.occupied = True
-                                            # Set vehicle health if provided
-                                            if vehicle_health is not None:
-                                                new_vehicle.health = vehicle_health
-                                            vehicles.append(new_vehicle)
-                                            logger.info(f"Created new tank at position {vehicle_position}")
+                                other_players[player_id] = (position, pseudo, soldier_type)
                             # Legacy format for backward compatibility
                             else:
                                 position = message[1]
@@ -377,8 +270,8 @@ def receive_data(sock):
                                 soldier_type = message[3] if len(message) > 3 else "falcon"
                                 health = message[4] if len(message) > 4 else 100
                                 
-                                # Store player info without vehicle data
-                                other_players[player_id] = (position, pseudo, soldier_type, False, None)
+                                # Store player info
+                                other_players[player_id] = (position, pseudo, soldier_type)
                             
                             # Update soldier health if it exists
                             if player_id in other_soldiers:
@@ -413,7 +306,6 @@ def load_bullet_images():
     
     # Charger les images de balles horizontales
     horizontal_images = []
-    horizontal_tank_images = []  # Bigger bullets for tanks
     for i in range(1, 11):
         try:
             image_path = os.path.join(bullet_path, f"Horizontal ({i}).png")
@@ -425,32 +317,11 @@ def load_bullet_images():
             new_size = (int(image.get_width() * scale_factor), int(image.get_height() * scale_factor))
             scaled_image = pygame.transform.scale(image, new_size)
             horizontal_images.append(scaled_image)
-            
-            # Bigger tank bullet size with orange tint for tank shots
-            tank_scale_factor = 0.5
-            tank_size = (int(image.get_width() * tank_scale_factor), int(image.get_height() * tank_scale_factor))
-            tank_image = pygame.transform.scale(image, tank_size)
-            
-            # Add orange tint to tank bullets while preserving transparency
-            tank_image_orange = tank_image.copy()
-            # Create orange overlay only on non-transparent pixels
-            for x in range(tank_image.get_width()):
-                for y in range(tank_image.get_height()):
-                    color = tank_image.get_at((x, y))
-                    if color.a > 0:  # Only modify non-transparent pixels
-                        # Add orange tint
-                        r = min(255, color.r + 100)
-                        g = min(255, color.g + 50)
-                        b = color.b
-                        tank_image_orange.set_at((x, y), pygame.Color(r, g, b, color.a))
-            
-            horizontal_tank_images.append(tank_image_orange)
         except Exception as e:
             logger.error(f"Erreur lors du chargement de l'image de balle horizontale {i}: {e}")
     
     # Charger les images de balles verticales
     vertical_images = []
-    vertical_tank_images = []  # Bigger bullets for tanks
     for i in range(1, 11):
         try:
             image_path = os.path.join(bullet_path, f"Vertical ({i}).png")
@@ -462,52 +333,22 @@ def load_bullet_images():
             new_size = (int(image.get_width() * scale_factor), int(image.get_height() * scale_factor))
             scaled_image = pygame.transform.scale(image, new_size)
             vertical_images.append(scaled_image)
-            
-            # Bigger tank bullet size with orange tint
-            tank_scale_factor = 0.5
-            tank_size = (int(image.get_width() * tank_scale_factor), int(image.get_height() * tank_scale_factor))
-            tank_image = pygame.transform.scale(image, tank_size)
-            
-            # Add orange tint to tank bullets while preserving transparency
-            tank_image_orange = tank_image.copy()
-            # Create orange overlay only on non-transparent pixels
-            for x in range(tank_image.get_width()):
-                for y in range(tank_image.get_height()):
-                    color = tank_image.get_at((x, y))
-                    if color.a > 0:  # Only modify non-transparent pixels
-                        # Add orange tint
-                        r = min(255, color.r + 100)
-                        g = min(255, color.g + 50)
-                        b = color.b
-                        tank_image_orange.set_at((x, y), pygame.Color(r, g, b, color.a))
-            
-            vertical_tank_images.append(tank_image_orange)
         except Exception as e:
             logger.error(f"Erreur lors du chargement de l'image de balle verticale {i}: {e}")
     
     bullet_images = {
         'horizontal': horizontal_images,
-        'vertical': vertical_images,
-        'horizontal_tank': horizontal_tank_images,
-        'vertical_tank': vertical_tank_images
+        'vertical': vertical_images
     }
 
 def send_player_position(sock, player):
     """Envoie la position du joueur au serveur"""
     try:
-        global player_in_vehicle, current_vehicle
-        
         position_data = {
             'position': (player.x, player.y),
             'pseudo': player.name,
             'soldier_type': player.soldier_type,
-            'health': player.health,
-            'in_vehicle': player_in_vehicle,
-            'vehicle_type': current_vehicle.vehicle_type.value if player_in_vehicle and current_vehicle else None,
-            'vehicle_id': id(current_vehicle) if player_in_vehicle and current_vehicle else None,
-            'vehicle_position': (current_vehicle.x, current_vehicle.y) if player_in_vehicle and current_vehicle else None,
-            'vehicle_direction': current_vehicle.direction.value if player_in_vehicle and current_vehicle else None,
-            'vehicle_health': current_vehicle.health if player_in_vehicle and current_vehicle else None
+            'health': player.health
         }
         sock.send(pickle.dumps(position_data))
         return True
@@ -617,13 +458,12 @@ def draw_shots(screen, camera_x, camera_y):
     for shot_id, shot in shot_list:
         # Déterminer si le tir est horizontal ou vertical
         is_horizontal = abs(shot['direction'][0]) > abs(shot['direction'][1])
-        is_tank_shot = shot.get('is_tank_shot', False)
         
-        # Select appropriate image set based on direction and shot type
+        # Select appropriate image set based on direction
         if is_horizontal:
-            image_key = 'horizontal_tank' if is_tank_shot else 'horizontal'
+            image_key = 'horizontal'
         else:
-            image_key = 'vertical_tank' if is_tank_shot else 'vertical'
+            image_key = 'vertical'
         
         # Dessiner le tir avec l'image appropriée
         if bullet_images.get(image_key):
@@ -644,8 +484,8 @@ def draw_shots(screen, camera_x, camera_y):
             screen.blit(bullet_image, (draw_x, draw_y))
         else:
             # Fallback si les images ne sont pas disponibles
-            color = (255, 165, 0) if is_tank_shot else RED  # Orange for tank, red for normal
-            size = 8 if is_tank_shot else 5
+            color = RED  # Red for normal bullets
+            size = 5
             pygame.draw.circle(screen, color, 
                               (int(shot['position'][0] - camera_x), int(shot['position'][1] - camera_y)), 
                               size)
@@ -662,74 +502,38 @@ def check_shot_collisions():
     shots_to_remove = []
     
     with data_lock:
-        # Vérifier les collisions avec le joueur local si pas dans un véhicule
-        if not player_in_vehicle:
-            player_rect = pygame.Rect(player.x - 25, player.y - 25, 50, 50)
-            
-            for shot_id, shot in list(shots.items()):
-                # Ne pas vérifier les collisions avec nos propres tirs
-                if shot.get('player_id') == client_id:
-                    continue
-                
-                # Créer une hitbox pour le tir
-                shot_rect = pygame.Rect(shot['position'][0] - 5, shot['position'][1] - 5, 10, 10)
-                
-                # Vérifier la collision avec le joueur local
-                if player_rect.colliderect(shot_rect):
-                    logger.info(f"Touché par le tir de {shot.get('player_id')}!")
-                    shots_to_remove.append(shot_id)
-                    
-                    # Determine damage - higher for tank shots
-                    damage = shot.get('damage', 10) if shot.get('is_tank_shot') else 10
-                    player.take_damage(damage)
-                    
-                    # Make sure player stays in a movable state
-                    if player.health > 0:
-                        player.state = SoldierState.IDLE
-                    
-                    # Play hit sound
-                    play_hit_sound()
-                    
-                    # Envoyer une mise à jour de santé au serveur si nous avons une connexion
-                    global sock_global
-                    if sock_global:
-                        send_health_update(sock_global, player.health)
-                        # Also send position update to ensure sync
-                        send_player_position(sock_global, player)
+        # Vérifier les collisions avec le joueur local
+        player_rect = pygame.Rect(player.x - 25, player.y - 25, 50, 50)
         
-        # Check collisions with player's vehicle if in one
-        elif player_in_vehicle and current_vehicle:
-            vehicle_rect = pygame.Rect(
-                current_vehicle.x - current_vehicle.hitbox_width // 2,
-                current_vehicle.y - current_vehicle.hitbox_height // 2,
-                current_vehicle.hitbox_width,
-                current_vehicle.hitbox_height
-            )
+        for shot_id, shot in list(shots.items()):
+            # Ne pas vérifier les collisions avec nos propres tirs
+            if shot.get('player_id') == client_id:
+                continue
             
-            for shot_id, shot in list(shots.items()):
-                # Ne pas vérifier les collisions avec nos propres tirs
-                if shot.get('player_id') == client_id:
-                    continue
+            # Créer une hitbox pour le tir
+            shot_rect = pygame.Rect(shot['position'][0] - 5, shot['position'][1] - 5, 10, 10)
+            
+            # Vérifier la collision avec le joueur local
+            if player_rect.colliderect(shot_rect):
+                logger.info(f"Touché par le tir de {shot.get('player_id')}!")
+                shots_to_remove.append(shot_id)
                 
-                # Créer une hitbox pour le tir
-                shot_rect = pygame.Rect(shot['position'][0] - 5, shot['position'][1] - 5, 10, 10)
+                # Determine damage 
+                damage = 10
+                player.take_damage(damage)
                 
-                # Vérifier la collision avec le véhicule
-                if vehicle_rect.colliderect(shot_rect):
-                    logger.info(f"Véhicule touché par le tir de {shot.get('player_id')}!")
-                    shots_to_remove.append(shot_id)
-                    
-                    # Apply damage to vehicle (less damage than to a player)
-                    damage = shot.get('damage', 5) if shot.get('is_tank_shot') else 5
-                    current_vehicle.take_damage(damage)
-                    current_vehicle.show_damaged = True  # Flag to show tank is taking damage
-                    current_vehicle.damage_timer = 30  # Number of frames to show slow health change
-                    
-                    # Send updated position with vehicle health
-                    if sock_global:
-                        send_player_position(sock_global, player)
+                # Make sure player stays in a movable state
+                if player.health > 0:
+                    player.state = SoldierState.IDLE
+                
+                # Envoyer une mise à jour de santé au serveur si nous avons une connexion
+                global sock_global
+                if sock_global:
+                    send_health_update(sock_global, player.health)
+                    # Also send position update to ensure sync
+                    send_player_position(sock_global, player)
         
-        # Vérifier les collisions avec les autres joueurs et véhicules si on est le tireur
+        # Vérifier les collisions avec les autres joueurs si on est le tireur
         for shot_id, shot in list(shots.items()):
             if shot.get('player_id') == client_id:
                 # Check collision with other players
@@ -744,47 +548,13 @@ def check_shot_collisions():
                         logger.info(f"Tir {shot_id} a touché le joueur {other_id}!")
                         shots_to_remove.append(shot_id)
                         
-                        # Determine damage - higher for tank shots
-                        damage = shot.get('damage', 10) if shot.get('is_tank_shot') else 10
+                        # Determine damage
+                        damage = 10
                         
                         # Envoyer une notification de dégâts au serveur
                         if sock_global:
                             send_hit_notification(sock_global, other_id, damage)
                         break
-                
-                # Check collision with other vehicles
-                # Get player data from other_players to know who is in a vehicle
-                for pid, player_data in other_players.items():
-                    if len(player_data) >= 5 and player_data[3]:  # player is in vehicle
-                        # Find vehicle at player position
-                        for vehicle in vehicles:
-                            if vehicle.occupied:
-                                vehicle_pos = player_data[0]  # position
-                                # If this vehicle is near the player position
-                                if abs(vehicle.x - vehicle_pos[0]) < 50 and abs(vehicle.y - vehicle_pos[1]) < 50:
-                                    # Create vehicle hitbox
-                                    vehicle_rect = pygame.Rect(
-                                        vehicle.x - vehicle.hitbox_width // 2,
-                                        vehicle.y - vehicle.hitbox_height // 2,
-                                        vehicle.hitbox_width,
-                                        vehicle.hitbox_height
-                                    )
-                                    
-                                    shot_rect = pygame.Rect(shot['position'][0] - 5, shot['position'][1] - 5, 10, 10)
-                                    
-                                    if shot_rect.colliderect(vehicle_rect):
-                                        logger.info(f"Tir {shot_id} a touché le véhicule de {pid}!")
-                                        shots_to_remove.append(shot_id)
-                                        
-                                        # Indicate to show visual damage
-                                        vehicle.show_damaged = True
-                                        vehicle.damage_timer = 30
-                                        
-                                        # Damage is handled on the target's client
-                                        # We just send a vehicle hit notification
-                                        if sock_global:
-                                            send_vehicle_hit_notification(sock_global, pid, shot.get('damage', 5) if shot.get('is_tank_shot') else 5)
-                                        break
     
     # Supprimer les tirs qui ont touché des joueurs
     with data_lock:
@@ -823,76 +593,8 @@ def respawn_player(player):
     player.y = random.randint(100, map_height - 100)
     return player
 
-def load_sound_effects():
-    """Load sound effects for explosions and hits"""
-    global explosion_sound, hit_sound, tank_hit_sound
-    
-    # Initialize sound mixer if not already done
-    if not pygame.mixer.get_init():
-        pygame.mixer.init()
-    
-    # Create sound directory if it doesn't exist
-    assets_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets')
-    sound_dir = os.path.join(assets_dir, 'sounds')
-    if not os.path.exists(sound_dir):
-        os.makedirs(sound_dir)
-        logger.info(f"Created sounds directory at {sound_dir}")
-    
-    # Try to load sound files
-    try:
-        # Check for explosion sound files
-        explosion_path = os.path.join(sound_dir, 'explosion.wav')
-        hit_path = os.path.join(sound_dir, 'hit.wav')
-        tank_hit_path = os.path.join(sound_dir, 'tank_hit.wav')
-        
-        # Create default dummy sounds in case files don't exist
-        dummy_sound_data = b'RIFF\x00\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x00\x04\x00\x00\x00\x04\x00\x00\x01\x00\x08\x00data\x00\x00\x00\x00'
-        
-        # Load or create sounds
-        if os.path.exists(explosion_path):
-            explosion_sound = pygame.mixer.Sound(explosion_path)
-        else:
-            explosion_sound = pygame.mixer.Sound(io.BytesIO(dummy_sound_data))
-            
-        if os.path.exists(hit_path):
-            hit_sound = pygame.mixer.Sound(hit_path)
-        else:
-            hit_sound = pygame.mixer.Sound(io.BytesIO(dummy_sound_data))
-            
-        if os.path.exists(tank_hit_path):
-            tank_hit_sound = pygame.mixer.Sound(tank_hit_path)
-        else:
-            tank_hit_sound = pygame.mixer.Sound(io.BytesIO(dummy_sound_data))
-        
-        # Set volumes
-        explosion_sound.set_volume(0.4)
-        hit_sound.set_volume(0.3)
-        tank_hit_sound.set_volume(0.5)
-        
-        logger.info("Loaded sound effects successfully")
-    except Exception as e:
-        log_exception(e, "Error loading sound effects")
-        # Create silent dummy sounds if loading fails
-        dummy_sound = pygame.mixer.Sound(io.BytesIO(dummy_sound_data))
-        explosion_sound = dummy_sound
-        hit_sound = dummy_sound
-        tank_hit_sound = dummy_sound
-
-def play_explosion_sound(is_tank=False):
-    """Play the appropriate explosion sound"""
-    if is_tank and tank_hit_sound:
-        tank_hit_sound.play()
-    elif explosion_sound:
-        explosion_sound.play()
-
-def play_hit_sound():
-    """Play the hit sound"""
-    if hit_sound:
-        hit_sound.play()
-
 def main():
     global SCREEN_WIDTH, SCREEN_HEIGHT, camera_x, camera_y, player, other_soldiers, sock_global
-    global player_in_vehicle, current_vehicle
     
     sock_global = None
     player_x, player_y = 400, 300
@@ -902,7 +604,6 @@ def main():
     # Charger les images de balles
     load_bullet_images()
     load_explosion_images()
-    load_sound_effects()
 
     menu = Menu(screen)
     action, ip = menu.show()
@@ -974,33 +675,6 @@ def main():
                     if sock_global:
                         send_health_update(sock_global, player.health)
                         send_player_position(sock, player)
-                elif event.key == pygame.K_e:
-                    # Handle vehicle entry/exit with E key
-                    if player_in_vehicle and current_vehicle:
-                        # Exit vehicle
-                        player_exited = current_vehicle.exit_vehicle()
-                        if player_exited:
-                            player_in_vehicle = False
-                            # Mark the vehicle as unoccupied
-                            current_vehicle.occupied = False
-                            current_vehicle = None
-                            # Send updated position to server
-                            if sock_global:
-                                send_player_position(sock, player)
-                            logger.info("Exited vehicle")
-                    else:
-                        # Try to enter a vehicle if nearby
-                        for vehicle in vehicles:
-                            # Check if vehicle is already occupied
-                            if not vehicle.occupied and vehicle.is_near_player(player.x, player.y):
-                                if vehicle.enter_vehicle(player):
-                                    player_in_vehicle = True
-                                    current_vehicle = vehicle
-                                    # Immediately send updated position with vehicle info
-                                    if sock_global:
-                                        send_player_position(sock, player)
-                                    logger.info(f"Entered {vehicle.vehicle_type.value}")
-                                    break
         
         # Gestion du clavier (seulement si le joueur est vivant)
         keys = pygame.key.get_pressed()
@@ -1010,78 +684,39 @@ def main():
         current_time = pygame.time.get_ticks()
         
         if player.health > 0:
-            if player_in_vehicle and current_vehicle:
-                # Update vehicle when player is inside
-                player_moved = current_vehicle.update(keys)
+            # Normal player movement
+            player_moved = player.update(keys)
+            
+            # Limiter la position du joueur aux limites de la carte
+            player.x = max(0, min(player.x, map_width - 50))
+            player.y = max(0, min(player.y, map_height - 50))
+            
+            # Normal position update when moving
+            if player_moved or current_time - last_position_update > position_update_rate:
+                last_position_update = current_time
+                send_player_position(sock, player)
+            
+            # Gestion des tirs
+            if keys[pygame.K_SPACE] and current_time - last_shot_time > shot_cooldown:
+                last_shot_time = current_time
                 
-                # Normal position update when moving
-                if player_moved or current_time - last_position_update > position_update_rate:
-                    last_position_update = current_time
-                    send_player_position(sock, player)
+                # Déterminer la direction du tir en fonction de la direction du joueur
+                direction = (1, 0)  # Direction par défaut
+                if player.direction == SoldierDirection.LEFT:
+                    direction = (-1, 0)
+                elif player.direction == SoldierDirection.RIGHT:
+                    direction = (1, 0)
+                elif player.direction == SoldierDirection.BACK:
+                    direction = (0, -1)
+                elif player.direction == SoldierDirection.FRONT:
+                    direction = (0, 1)
                 
-                # Handle shooting from vehicle with space key
-                if keys[pygame.K_SPACE] and current_time - last_shot_time > shot_cooldown:
-                    if current_vehicle.shoot():
-                        last_shot_time = current_time
-                        
-                        # Determine shot direction based on tank direction
-                        direction = (1, 0)  # Default direction
-                        if current_vehicle.direction == VehicleDirection.LEFT:
-                            direction = (-1, 0)
-                        elif current_vehicle.direction == VehicleDirection.RIGHT:
-                            direction = (1, 0)
-                        elif current_vehicle.direction == VehicleDirection.BACK:
-                            direction = (0, -1)
-                        elif current_vehicle.direction == VehicleDirection.FRONT:
-                            direction = (0, 1)
-                        
-                        # Send tank shot to server (using same shot system)
-                        # But with higher damage (handled on collision)
-                        send_tank_shot(sock, current_vehicle, direction)
-            else:
-                # Normal player movement when not in vehicle
-                player_moved = player.update(keys)
-                
-                # Limiter la position du joueur aux limites de la carte
-                player.x = max(0, min(player.x, map_width - 50))
-                player.y = max(0, min(player.y, map_height - 50))
-                
-                # Normal position update when moving
-                if player_moved or current_time - last_position_update > position_update_rate:
-                    last_position_update = current_time
-                    send_player_position(sock, player)
-                
-                # Update player_nearby flag for vehicles
-                for vehicle in vehicles:
-                    vehicle.player_nearby = vehicle.is_near_player(player.x, player.y)
-                
-                # Gestion des tirs
-                if keys[pygame.K_SPACE] and current_time - last_shot_time > shot_cooldown:
-                    last_shot_time = current_time
-                    
-                    # Déterminer la direction du tir en fonction de la direction du joueur
-                    direction = (1, 0)  # Direction par défaut
-                    if player.direction == SoldierDirection.LEFT:
-                        direction = (-1, 0)
-                    elif player.direction == SoldierDirection.RIGHT:
-                        direction = (1, 0)
-                    elif player.direction == SoldierDirection.BACK:
-                        direction = (0, -1)
-                    elif player.direction == SoldierDirection.FRONT:
-                        direction = (0, 1)
-                    
-                    # Envoyer le tir au serveur
-                    send_shot(sock, player, direction)
+                # Envoyer le tir au serveur
+                send_shot(sock, player, direction)
         else:
             # Si le joueur vient de mourir, enregistrer le moment
             if death_timer == 0:
                 death_timer = pygame.time.get_ticks()
-                
-                # If player dies while in vehicle, exit the vehicle
-                if player_in_vehicle and current_vehicle:
-                    current_vehicle.exit_vehicle()
-                    player_in_vehicle = False
-                    current_vehicle = None
         
         # Mise à jour de la caméra pour suivre le joueur en douceur
         target_camera_x = player.x - SCREEN_WIDTH // 2
@@ -1105,10 +740,6 @@ def main():
         # Mise à jour des tirs
         update_shots()
         
-        # Periodically clean up duplicate vehicles (every ~5 seconds)
-        if pygame.time.get_ticks() % 5000 < 50:
-            cleanup_vehicles()
-        
         # Vérification des collisions (seulement si le joueur est vivant)
         if player.health > 0:
             check_shot_collisions()
@@ -1119,26 +750,16 @@ def main():
         # Dessiner la carte
         map_manager.draw(screen, camera_x, camera_y)
         
-        # Draw vehicles
-        for vehicle in vehicles:
-            vehicle.draw(screen, camera_x, camera_y)
-        
         # Dessiner les autres joueurs (seulement ceux qui sont vivants)
         with data_lock:
             other_player_list = list(other_players.items())
         
         for pid, player_data in other_player_list:
-            # Unpack the player data (now includes vehicle info)
+            # Unpack the player data
             if len(player_data) >= 5:  # New format with vehicle info
-                pos, name, soldier_type, in_vehicle, vehicle_type = player_data
+                pos, name, soldier_type = player_data[0], player_data[1], player_data[2]
             else:  # Legacy format for backward compatibility
                 pos, name, soldier_type = player_data
-                in_vehicle = False
-                vehicle_type = None
-
-            # Skip drawing players who are in vehicles
-            if in_vehicle:
-                continue
 
             if pid not in other_soldiers:
                 # Créer un nouvel objet Soldier s'il n'existe pas
@@ -1162,8 +783,8 @@ def main():
         # Dessiner les tirs
         draw_shots(screen, camera_x, camera_y)
         
-        # Dessiner le joueur local s'il est vivant et pas dans un véhicule
-        if (player.health > 0 or player.state != SoldierState.DEAD) and not player_in_vehicle:
+        # Dessiner le joueur local s'il est vivant
+        if (player.health > 0 or player.state != SoldierState.DEAD):
             player.draw(screen, camera_x, camera_y)
         
         # Afficher l'écran de mort si le joueur est mort
@@ -1184,88 +805,6 @@ def main():
     # Fermer la connexion
     sock.close()
     pygame.quit()
-
-def send_tank_shot(sock, vehicle, shot_direction):
-    """Envoie un tir de tank au serveur"""
-    try:
-        # Create shot data with higher speed and damage
-        shot_data = {
-            'shot': {
-                'position': (vehicle.x, vehicle.y),
-                'direction': shot_direction,
-                'speed': 15,  # Faster than regular bullets
-                'player_id': client_id,
-                'is_tank_shot': True,  # Flag to indicate this is a tank shot
-                'damage': vehicle.damage  # Higher damage for tank shots
-            }
-        }
-        
-        # Générer un ID local pour le tir
-        shot_id = str(uuid.uuid4())
-        
-        # Envoyer le tir au serveur
-        sock.send(pickle.dumps(shot_data))
-        
-        # Ajouter le tir localement pour un affichage immédiat
-        with data_lock:
-            shots[shot_id] = shot_data['shot']
-        
-        logger.info(f"Tir de tank envoyé: {shot_id}")
-        return True
-    except socket.error as e:
-        logger.error(f"Erreur d'envoi de tir de tank: {e}")
-        return False
-    except Exception as e:
-        log_exception(e, "Erreur lors de l'envoi du tir de tank")
-        return False
-
-def cleanup_vehicles():
-    """Removes duplicate and unused vehicles to prevent excess vehicles"""
-    global vehicles
-    
-    # Only keep one vehicle of each type at each approximate location
-    # This prevents duplicate vehicles from accumulating
-    unique_vehicles = []
-    vehicle_positions = []
-    
-    for vehicle in vehicles:
-        # Check if there's already a similar vehicle at this position
-        duplicate = False
-        for i, (x, y) in enumerate(vehicle_positions):
-            # If vehicles are close to each other and same type, consider duplicate
-            distance = ((vehicle.x - x)**2 + (vehicle.y - y)**2)**0.5
-            if distance < 50 and vehicle.vehicle_type == unique_vehicles[i].vehicle_type:
-                # If the existing one is not occupied but this one is, replace it
-                if not unique_vehicles[i].occupied and vehicle.occupied:
-                    unique_vehicles[i] = vehicle
-                    vehicle_positions[i] = (vehicle.x, vehicle.y)
-                duplicate = True
-                break
-        
-        if not duplicate:
-            unique_vehicles.append(vehicle)
-            vehicle_positions.append((vehicle.x, vehicle.y))
-    
-    # Update the vehicles list
-    vehicles = unique_vehicles
-
-def send_vehicle_hit_notification(sock, target_id, damage):
-    """Envoie une notification de dégâts au véhicule au serveur"""
-    try:
-        hit_data = {
-            'vehicle_hit': {
-                'target_id': target_id,
-                'damage': damage
-            }
-        }
-        sock.send(pickle.dumps(hit_data))
-        return True
-    except socket.error as e:
-        logger.error(f"Erreur d'envoi de notification de dégâts au véhicule: {e}")
-        return False
-    except Exception as e:
-        log_exception(e, "Erreur lors de l'envoi de la notification de dégâts au véhicule")
-        return False
 
 if __name__ == "__main__":
     main()
