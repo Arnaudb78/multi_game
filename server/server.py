@@ -53,12 +53,22 @@ class ClientThread(threading.Thread):
             # Envoyer l'état actuel de tous les joueurs au nouveau client
             for player_id, (_, pos, pseudo, soldier_type) in players.items():
                 if player_id != self.client_id:  # Ne pas envoyer sa propre position
-                    if not self.send_data((player_id, pos, pseudo, soldier_type)):
+                    try:
+                        # Format standard: (client_id, position, pseudo, soldier_type)
+                        player_data = (player_id, pos, pseudo, soldier_type)
+                        self.client_socket.send(pickle.dumps(player_data))
+                    except socket.error as e:
+                        logger.error(f"Error sending player data: {e}")
                         return
             
             # Envoyer tous les tirs actifs au nouveau client
             for shot_id, shot_data in shots.items():
-                if not self.send_data(('shot', shot_id, shot_data)):
+                try:
+                    # Format standard: ('shot', shot_id, shot_data)
+                    shot_message = ('shot', shot_id, shot_data)
+                    self.client_socket.send(pickle.dumps(shot_message))
+                except socket.error as e:
+                    logger.error(f"Error sending shot data: {e}")
                     return
             
             last_update = 0
@@ -69,12 +79,12 @@ class ClientThread(threading.Thread):
 
                 # Mettre à jour la position du joueur ou gérer les tirs
                 try:
-                    data = pickle.loads(data)
+                    parsed_data = pickle.loads(data)
                     
                     # Handle shot data
-                    if isinstance(data, dict) and 'shot' in data:
+                    if isinstance(parsed_data, dict) and 'shot' in parsed_data:
                         shot_id = str(uuid.uuid4())
-                        shot_data = data['shot']
+                        shot_data = parsed_data['shot']
                         shot_data['player_id'] = self.client_id
                         shots[shot_id] = shot_data
                         
@@ -88,10 +98,10 @@ class ClientThread(threading.Thread):
                                 continue
                     
                     # Handle position data
-                    if isinstance(data, dict) and 'position' in data:
-                        position = data['position']
-                        pseudo = data.get('pseudo', "")
-                        soldier_type = data.get('soldier_type', "falcon")
+                    elif isinstance(parsed_data, dict) and 'position' in parsed_data:
+                        position = parsed_data['position']
+                        pseudo = parsed_data.get('pseudo', "")
+                        soldier_type = parsed_data.get('soldier_type', "falcon")
                         players[self.client_id] = (self.client_socket, position, pseudo, soldier_type)
                         
                         # Broadcast position update to other clients only
@@ -103,6 +113,8 @@ class ClientThread(threading.Thread):
                                 except socket.error as e:
                                     logger.error(f"Error sending position: {e}")
                                     continue
+                    else:
+                        logger.warning(f"Unrecognized data format: {type(parsed_data)}")
                                     
                 except Exception as e:
                     logger.error(f"Error processing data: {e}")

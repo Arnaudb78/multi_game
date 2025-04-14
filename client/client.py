@@ -155,42 +155,54 @@ def receive_data(sock):
                 msg = pickle.loads(buffer)
                 buffer = b""  # Vider le buffer après désérialisation réussie
                 
-                if msg[0] == 'init':
-                    client_id = msg[1]
-                    print(f"Connecté avec l'ID: {client_id}")
-                    
-                elif msg[0] == 'disconnect':
-                    if msg[1] in other_players:
-                        print(f"Joueur déconnecté: {other_players[msg[1]][1]}")
-                        del other_players[msg[1]]
-                    # Supprimer les tirs du joueur déconnecté
-                    shots_to_remove = [shot_id for shot_id, shot_data in shots.items() 
-                                      if shot_data.get('player_id') == msg[1]]
-                    for shot_id in shots_to_remove:
-                        del shots[shot_id]
-                        
-                elif msg[0] == 'shot':
-                    # Format du message: ('shot', shot_id, shot_data)
-                    if len(msg) >= 3:
-                        shot_id = msg[1]
-                        shot_data = msg[2]
-                        # Ne pas ajouter nos propres tirs car ils sont déjà dans la liste
-                        if shot_data.get('player_id') != client_id or shot_id not in shots:
-                            shots[shot_id] = shot_data
-                            print(f"Tir reçu: {shot_id} de joueur {shot_data.get('player_id')}")
+                # Traiter les messages formatés en tuple
+                if isinstance(msg, tuple):
+                    if len(msg) > 0:
+                        if msg[0] == 'init':
+                            client_id = msg[1]
+                            print(f"Connecté avec l'ID: {client_id}")
                             
+                        elif msg[0] == 'disconnect':
+                            if msg[1] in other_players:
+                                print(f"Joueur déconnecté: {other_players[msg[1]][1]}")
+                                del other_players[msg[1]]
+                            # Supprimer les tirs du joueur déconnecté
+                            shots_to_remove = [shot_id for shot_id, shot_data in shots.items() 
+                                            if shot_data.get('player_id') == msg[1]]
+                            for shot_id in shots_to_remove:
+                                del shots[shot_id]
+                                
+                        elif msg[0] == 'shot':
+                            # Format du message: ('shot', shot_id, shot_data)
+                            if len(msg) >= 3:
+                                shot_id = msg[1]
+                                shot_data = msg[2]
+                                # Ne pas ajouter nos propres tirs car ils sont déjà dans la liste
+                                if shot_data.get('player_id') != client_id or shot_id not in shots:
+                                    shots[shot_id] = shot_data
+                                    print(f"Tir reçu: {shot_id} de joueur {shot_data.get('player_id')}")
+                        
+                        # Format position: (client_id, position, pseudo, soldier_type)
+                        elif len(msg) == 4 and isinstance(msg[1], tuple) and len(msg[1]) == 2:
+                            pid, pos, pseudo, soldier_type = msg
+                            if pid != client_id:  # Ne pas traiter notre propre position
+                                other_players[pid] = (pos, pseudo, soldier_type)
+                
+                # Traiter les messages formatés en dictionnaire
+                elif isinstance(msg, dict):
+                    if 'position' in msg:
+                        # Ignorer ce message car il s'agit de notre propre position
+                        pass
+                    elif 'shot' in msg:
+                        # Ignorer ce message car c'est notre propre tir
+                        pass
+                    else:
+                        print(f"Message dict inconnu: {msg.keys()}")
                 else:
-                    # Message de position d'un autre joueur
-                    try:
-                        pid, pos, pseudo, soldier_type = msg
-                        if pid != client_id:  # Ne pas traiter notre propre position
-                            other_players[pid] = (pos, pseudo, soldier_type)
-                    except (ValueError, TypeError) as e:
-                        print(f"Erreur format message: {e}")
-                        continue
+                    print(f"Type de message non géré: {type(msg)}")
                     
-            except (pickle.UnpicklingError, IndexError) as e:
-                print(f"Erreur désérialisation: {e}")
+            except (pickle.UnpicklingError, IndexError, ValueError, TypeError, AttributeError) as e:
+                print(f"Erreur désérialisation: {e}, type du message: {type(msg) if 'msg' in locals() else 'inconnu'}")
                 buffer = b""  # Vider le buffer en cas d'erreur
                 
         except socket.error as e:
