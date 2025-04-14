@@ -33,9 +33,10 @@ logger = logging.getLogger(__name__)
 
 # Variables globales
 client_id = None
-other_players = {}  # {client_id: (x, y, pseudo, soldier_type)}
+other_players = {}  # {client_id: (x, y, pseudo, soldier_type, health)}
 other_soldiers = {}  # {client_id: Soldier}  # Cache of soldier objects
 player = None
+bullets = []  # List of active bullets: [(x, y, direction, owner_id)]
 
 # Camera
 camera_x = 0
@@ -130,7 +131,7 @@ def start_server():
 
 # === CLIENT CODE ===
 def receive_data(sock):
-    global other_players, other_soldiers, client_id
+    global other_players, other_soldiers, client_id, bullets
     buffer = b""
     while True:
         try:
@@ -149,16 +150,18 @@ def receive_data(sock):
                             del other_players[msg[1]]
                             if msg[1] in other_soldiers:
                                 del other_soldiers[msg[1]]
-                    else:
-                        pid, pos, pseudo, soldier_type = msg
+                    elif msg[0] == 'player':
+                        pid, pos, health = msg[1:]
                         if pid != client_id:
-                            other_players[pid] = (pos, pseudo, soldier_type)
-                            # Create or update soldier object
-                            if pid not in other_soldiers:
-                                other_soldiers[pid] = Soldier(pos[0], pos[1], soldier_type, pseudo)
-                            else:
+                            other_players[pid] = (pos[0], pos[1], other_players[pid][2], other_players[pid][3], health)
+                            if pid in other_soldiers:
                                 other_soldiers[pid].x = pos[0]
                                 other_soldiers[pid].y = pos[1]
+                                other_soldiers[pid].health = health
+                    elif msg[0] == 'bullet':
+                        # Add or update bullet
+                        x, y, direction, owner_id = msg[1:]
+                        bullets.append((x, y, direction, owner_id))
                 except pickle.UnpicklingError:
                     break
         except socket.error as e:
@@ -167,9 +170,10 @@ def receive_data(sock):
 
 
 def main():
-    global SCREEN_WIDTH, SCREEN_HEIGHT, camera_x, camera_y, player, last_network_update
+    global SCREEN_WIDTH, SCREEN_HEIGHT, camera_x, camera_y, player, last_network_update, bullets
     player_x, player_y = 400, 300
     last_network_update = 0  # Initialize the network update timer
+    bullets = []  # Initialize bullets list
 
     menu = Menu(screen)
     action, ip = menu.show()
@@ -213,6 +217,18 @@ def main():
         keys = pygame.key.get_pressed()
         player.update(keys)
 
+        # Handle shooting
+        if keys[pygame.K_SPACE] and player.shoot_cooldown <= 0:
+            # Send shoot command to server
+            try:
+                direction = "LEFT" if player.direction == SoldierDirection.LEFT else \
+                          "RIGHT" if player.direction == SoldierDirection.RIGHT else \
+                          "UP" if player.direction == SoldierDirection.BACK else "DOWN"
+                sock.send(pickle.dumps(('shoot', direction)))
+            except socket.error:
+                pass
+            player.shoot_cooldown = player.shoot_delay
+
         # Clamp player position to map boundaries
         player.x = max(0, min(player.x, map_width - 50))
         player.y = max(0, min(player.y, map_height - 50))
@@ -237,7 +253,7 @@ def main():
                     'pseudo': pseudo,
                     'soldier_type': soldier_type
                 }
-                sock.send(pickle.dumps(msg))
+                sock.send(pickle.dumps(('position', msg)))
                 last_network_update = current_time
             except socket.error:
                 break
@@ -253,6 +269,15 @@ def main():
 
         # Draw current player
         player.draw(screen, camera_x, camera_y)
+
+        # Draw bullets
+        for bullet in bullets[:]:
+            x, y, direction, owner_id = bullet
+            # Create bullet object for drawing
+            bullet_obj = Bullet(x, y, SoldierDirection.LEFT if direction == "LEFT" else
+                              SoldierDirection.RIGHT if direction == "RIGHT" else
+                              SoldierDirection.BACK if direction == "UP" else SoldierDirection.FRONT)
+            bullet_obj.draw(screen, camera_x, camera_y)
 
         pygame.display.flip()
         clock.tick(60)
