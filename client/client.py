@@ -177,21 +177,56 @@ def receive_data(sock):
                 # Message de position (format complet avec vehicle info)
                 elif isinstance(message, tuple) and len(message) >= 2:
                     player_id = message[0]
-                    player_data = message[1]
                     
                     # Ne pas traiter notre propre position
                     if player_id != client_id:
                         with data_lock:
-                            # Extract player data
-                            position = player_data.get('position')
-                            pseudo = player_data.get('pseudo')
-                            soldier_type = player_data.get('soldier_type')
-                            health = player_data.get('health', 100)
-                            in_vehicle = player_data.get('in_vehicle', False)
-                            vehicle_type = player_data.get('vehicle_type')
-                            
-                            # Store player info with vehicle data
-                            other_players[player_id] = (position, pseudo, soldier_type, in_vehicle, vehicle_type)
+                            # New message format with complete data
+                            if isinstance(message[1], dict):
+                                player_data = message[1]
+                                position = player_data.get('position')
+                                pseudo = player_data.get('pseudo')
+                                soldier_type = player_data.get('soldier_type')
+                                health = player_data.get('health', 100)
+                                in_vehicle = player_data.get('in_vehicle', False)
+                                vehicle_type = player_data.get('vehicle_type')
+                                vehicle_id = player_data.get('vehicle_id')
+                                vehicle_position = player_data.get('vehicle_position')
+                                vehicle_direction = player_data.get('vehicle_direction')
+                                
+                                # Store player info
+                                other_players[player_id] = (position, pseudo, soldier_type, in_vehicle, vehicle_type)
+                                
+                                # Update or create vehicle if player is in one
+                                if in_vehicle and vehicle_position and vehicle_type and vehicle_direction:
+                                    # Check if this vehicle belongs to another player
+                                    vehicle_found = False
+                                    for v in vehicles:
+                                        # If vehicle ID exists in our list, update it
+                                        if id(v) == vehicle_id or (v.x == vehicle_position[0] and v.y == vehicle_position[1]):
+                                            v.x = vehicle_position[0]
+                                            v.y = vehicle_position[1]
+                                            v.direction = VehicleDirection(vehicle_direction)
+                                            v.occupied = True
+                                            vehicle_found = True
+                                            break
+                                    
+                                    # If vehicle not found, create a new one based on type
+                                    if not vehicle_found:
+                                        if vehicle_type == "tank":
+                                            new_vehicle = Tank(vehicle_position[0], vehicle_position[1], map_width, map_height)
+                                            new_vehicle.direction = VehicleDirection(vehicle_direction)
+                                            new_vehicle.occupied = True
+                                            vehicles.append(new_vehicle)
+                            # Legacy format for backward compatibility
+                            else:
+                                position = message[1]
+                                pseudo = message[2] if len(message) > 2 else ""
+                                soldier_type = message[3] if len(message) > 3 else "falcon"
+                                health = message[4] if len(message) > 4 else 100
+                                
+                                # Store player info without vehicle data
+                                other_players[player_id] = (position, pseudo, soldier_type, False, None)
                             
                             # Update soldier health if it exists
                             if player_id in other_soldiers:
@@ -270,7 +305,10 @@ def send_player_position(sock, player):
             'soldier_type': player.soldier_type,
             'health': player.health,
             'in_vehicle': player_in_vehicle,
-            'vehicle_type': current_vehicle.vehicle_type.value if player_in_vehicle and current_vehicle else None
+            'vehicle_type': current_vehicle.vehicle_type.value if player_in_vehicle and current_vehicle else None,
+            'vehicle_id': id(current_vehicle) if player_in_vehicle and current_vehicle else None,
+            'vehicle_position': (current_vehicle.x, current_vehicle.y) if player_in_vehicle and current_vehicle else None,
+            'vehicle_direction': current_vehicle.direction.value if player_in_vehicle and current_vehicle else None
         }
         sock.send(pickle.dumps(position_data))
         return True

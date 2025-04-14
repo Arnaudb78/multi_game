@@ -71,9 +71,21 @@ class ClientThread(threading.Thread):
             for player_id, (_, pos, pseudo, soldier_type, health) in player_list:
                 if player_id != self.client_id:  # Ne pas envoyer sa propre position
                     try:
-                        # Format enrichi: (client_id, position, pseudo, soldier_type, health)
-                        player_data = (player_id, pos, pseudo, soldier_type, health)
-                        if not self.send_data(player_data):
+                        # Format enrichi avec les données de véhicule (même si elles sont nulles pour l'instant)
+                        player_data = {
+                            'position': pos,
+                            'pseudo': pseudo,
+                            'soldier_type': soldier_type,
+                            'health': health,
+                            'in_vehicle': False,  # Par défaut, les joueurs ne sont pas dans des véhicules
+                            'vehicle_type': None,
+                            'vehicle_id': None,
+                            'vehicle_position': None,
+                            'vehicle_direction': None
+                        }
+                        
+                        player_message = (player_id, player_data)
+                        if not self.send_data(player_message):
                             logger.warning(f"Failed to send player data for {player_id} to new client {self.client_id}")
                     except Exception as e:
                         logger.error(f"Error sending player data: {e}")
@@ -145,6 +157,13 @@ class ClientThread(threading.Thread):
                         soldier_type = parsed_data.get('soldier_type', "falcon")
                         health = parsed_data.get('health', 100)  # Récupérer la santé s'il est fourni
                         
+                        # Get vehicle data
+                        in_vehicle = parsed_data.get('in_vehicle', False)
+                        vehicle_type = parsed_data.get('vehicle_type')
+                        vehicle_id = parsed_data.get('vehicle_id')
+                        vehicle_position = parsed_data.get('vehicle_position')
+                        vehicle_direction = parsed_data.get('vehicle_direction')
+                        
                         with data_lock:
                             # Récupérer la santé actuelle si non fournie
                             if 'health' not in parsed_data and self.client_id in players:
@@ -153,8 +172,18 @@ class ClientThread(threading.Thread):
                             
                             players[self.client_id] = (self.client_socket, position, pseudo, soldier_type, health)
                         
-                        # Broadcast position update to other clients only
-                        pos_message = (self.client_id, position, pseudo, soldier_type, health)
+                        # Broadcast position update with vehicle info to other clients only
+                        pos_message = (self.client_id, {
+                            'position': position,
+                            'pseudo': pseudo,
+                            'soldier_type': soldier_type,
+                            'health': health,
+                            'in_vehicle': in_vehicle,
+                            'vehicle_type': vehicle_type,
+                            'vehicle_id': vehicle_id,
+                            'vehicle_position': vehicle_position,
+                            'vehicle_direction': vehicle_direction
+                        })
                         self.broadcast_message(pos_message, exclude_self=True)
                     
                     # Handle hit notification
