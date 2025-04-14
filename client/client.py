@@ -12,6 +12,15 @@ import traceback
 # Add the parent directory to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Importer le module serveur pour démarrer le serveur localement si nécessaire
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'server'))
+try:
+    from server import start_server as server_start
+except ImportError:
+    # Définir une fonction de secours si l'import échoue
+    def server_start():
+        logger.error("Module serveur introuvable. Le serveur ne peut pas être démarré.")
+
 from menu import Menu
 from game.map_manager import MapManager
 from game.soldier import Soldier, SoldierDirection, SoldierState
@@ -353,7 +362,7 @@ def main():
         return
 
     if action == 'host':
-        threading.Thread(target=start_server, daemon=True).start()
+        threading.Thread(target=server_start, daemon=True).start()
         host = '127.0.0.1'
         # Attendre que le serveur démarre
         time.sleep(0.5)
