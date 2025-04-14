@@ -1,4 +1,34 @@
 import pygame
+import re
+import os
+import sys
+import tkinter as tk
+from tkinter import Tk
+
+# Fonction pour accéder au presse-papier via Tkinter
+def get_clipboard_text():
+    root = Tk()
+    root.withdraw()  # Cacher la fenêtre
+    try:
+        clipboard_text = root.clipboard_get()
+        return clipboard_text
+    except:
+        return ""
+    finally:
+        root.destroy()
+
+# Fonction pour copier du texte dans le presse-papier via Tkinter
+def set_clipboard_text(text):
+    root = Tk()
+    root.withdraw()  # Cacher la fenêtre
+    try:
+        root.clipboard_clear()
+        root.clipboard_append(text)
+        return True
+    except:
+        return False
+    finally:
+        root.destroy()
 
 # Init Pygame
 pygame.init()
@@ -27,6 +57,18 @@ class Menu:
         self.cursor_timer = 0
         self.input_rect = None
         self.mode = None  # 'host' ou 'join'
+        self.ip_pattern = re.compile(r'^(\d{1,3}\.){3}\d{1,3}$')
+
+    def is_valid_ip(self, ip):
+        if not self.ip_pattern.match(ip):
+            return False
+        return all(0 <= int(part) <= 255 for part in ip.split('.'))
+
+    def process_ip_input(self, text):
+        # Nettoie l'entrée pour ne garder que les chiffres et les points
+        cleaned = ''.join(c for c in text if c.isdigit() or c == '.')
+        # Limite à 15 caractères
+        return cleaned[:15]
 
     def draw_input(self, text, x, y, width, height, active):
         color = BLUE if active else GRAY
@@ -93,9 +135,24 @@ class Menu:
                     if event.key == pygame.K_BACKSPACE:
                         self.ip_input = self.ip_input[:-1]
                     elif event.key == pygame.K_RETURN:
-                        return 'join', self.ip_input.strip()
+                        if self.is_valid_ip(self.ip_input.strip()):
+                            return 'join', self.ip_input.strip()
+                    elif event.key == pygame.K_v and (pygame.key.get_mods() & pygame.KMOD_CTRL):
+                        # Gestion du collage avec Ctrl+V
+                        clipboard_text = get_clipboard_text()
+                        if clipboard_text:
+                            new_input = self.process_ip_input(clipboard_text)
+                            if len(self.ip_input) + len(new_input) <= 15:
+                                self.ip_input += new_input
+                    elif event.key == pygame.K_c and (pygame.key.get_mods() & pygame.KMOD_CTRL):
+                        # Gestion de la copie avec Ctrl+C
+                        set_clipboard_text(self.ip_input)
                     elif len(self.ip_input) < 15 and event.unicode.isprintable():
                         self.ip_input += event.unicode
+                elif event.type == pygame.TEXTINPUT and self.active_input:
+                    new_input = self.process_ip_input(event.text)
+                    if len(self.ip_input) + len(new_input) <= 15:
+                        self.ip_input += new_input
 
             clock.tick(60)
 
