@@ -8,6 +8,7 @@ import sys
 import os
 import time
 import traceback
+import random
 
 # Add the parent directory to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -34,6 +35,8 @@ PORT = 12345  # Port à utiliser
 
 WHITE = (255, 255, 255)
 RED = (255, 0, 0)
+BLACK = (0, 0, 0)
+DARK_RED = (139, 0, 0)
 
 # Initialisation pygame
 pygame.init()
@@ -130,10 +133,14 @@ def receive_data(sock):
                     # Mettre à jour la santé du joueur local si c'est nous
                     if player_id == client_id and player:
                         player.health = health
+                        if health <= 0:
+                            player.state = SoldierState.DEAD
                         logger.info(f"Santé locale mise à jour: {health}")
                     # Sinon, mettre à jour la santé des autres joueurs
                     elif player_id in other_soldiers:
                         other_soldiers[player_id].health = health
+                        if health <= 0:
+                            other_soldiers[player_id].state = SoldierState.DEAD
                         logger.info(f"Santé du joueur {player_id} mise à jour: {health}")
                 
                 # Message de notification de dégâts
@@ -147,10 +154,14 @@ def receive_data(sock):
                     # Si nous sommes la cible, mettre à jour notre santé
                     if target_id == client_id and player:
                         player.health = new_health
+                        if new_health <= 0:
+                            player.state = SoldierState.DEAD
                         logger.info(f"Vous avez été touché par {shooter_id} pour {damage} dégâts. Santé: {new_health}")
                     # Si un autre joueur est touché, mettre à jour sa santé
                     elif target_id in other_soldiers:
                         other_soldiers[target_id].health = new_health
+                        if new_health <= 0:
+                            other_soldiers[target_id].state = SoldierState.DEAD
                         logger.info(f"Joueur {target_id} touché par {shooter_id} pour {damage} dégâts. Santé: {new_health}")
                 
                 # Message de position (5 éléments: id, pos, pseudo, type, health)
@@ -162,9 +173,11 @@ def receive_data(sock):
                         with data_lock:
                             other_players[player_id] = (position, pseudo, soldier_type)
                         
-                        # Mettre à jour la santé du joueur s'il existe déjà
+                        # Mettre à jour la santé et l'état du joueur s'il existe déjà
                         if player_id in other_soldiers:
                             other_soldiers[player_id].health = health
+                            if health <= 0:
+                                other_soldiers[player_id].state = SoldierState.DEAD
                 
                 # Message de position (ancien format à 4 éléments)
                 elif isinstance(message, tuple) and len(message) == 4:
@@ -391,6 +404,10 @@ def check_shot_collisions():
     if player is None:
         return []
     
+    # Si le joueur est mort, on ne vérifie pas les collisions
+    if player.health <= 0:
+        return []
+    
     shots_to_remove = []
     
     with data_lock:
@@ -422,7 +439,7 @@ def check_shot_collisions():
             # Vérifier les collisions avec les autres joueurs si on est le tireur
             if shot.get('player_id') == client_id:
                 for other_id, other_soldier in other_soldiers.items():
-                    if other_id == client_id:  # Ne pas se frapper soi-même
+                    if other_id == client_id or other_soldier.health <= 0:  # Ne pas se frapper soi-même ou un joueur mort
                         continue
                     
                     other_rect = pygame.Rect(other_soldier.x - 25, other_soldier.y - 25, 50, 50)
@@ -444,10 +461,42 @@ def check_shot_collisions():
     
     return shots_to_remove
 
+def draw_death_screen(screen):
+    """Affiche l'écran de mort"""
+    # Assombrir l'écran avec un semi-transparent overlay
+    overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+    overlay.set_alpha(180)  # Semi-transparent
+    overlay.fill(BLACK)
+    screen.blit(overlay, (0, 0))
+    
+    # Dessiner le message "Vous êtes mort"
+    font_large = pygame.font.Font(None, 72)
+    text = font_large.render("VOUS ÊTES MORT", True, DARK_RED)
+    text_rect = text.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 - 50))
+    screen.blit(text, text_rect)
+    
+    # Dessiner les instructions pour rejouer
+    font_small = pygame.font.Font(None, 32)
+    instructions = font_small.render("Appuyez sur R pour réapparaître", True, WHITE)
+    instructions_rect = instructions.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 + 50))
+    screen.blit(instructions, instructions_rect)
+
+def respawn_player(player):
+    """Réinitialise le joueur après sa mort"""
+    player.health = 100
+    player.state = SoldierState.IDLE
+    # Position aléatoire sur la carte
+    player.x = random.randint(100, map_width - 100)
+    player.y = random.randint(100, map_height - 100)
+    return player
+
 def main():
     global SCREEN_WIDTH, SCREEN_HEIGHT, camera_x, camera_y, player, other_soldiers, sock_global
+    
     sock_global = None
     player_x, player_y = 400, 300
+    death_timer = 0
+    respawn_delay = 3000  # 3 secondes avant de pouvoir réapparaître
 
     # Charger les images de balles
     load_bullet_images()
@@ -516,38 +565,49 @@ def main():
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_F3:
                     fps_display = not fps_display
+                elif event.key == pygame.K_r and player.health <= 0 and pygame.time.get_ticks() - death_timer > respawn_delay:
+                    # Réapparaître si mort et touche R pressée
+                    player = respawn_player(player)
+                    if sock_global:
+                        send_health_update(sock_global, player.health)
+                        send_player_position(sock, player)
         
-        # Gestion du clavier
+        # Gestion du clavier (seulement si le joueur est vivant)
         keys = pygame.key.get_pressed()
-        player.update(keys)
-        
-        # Limiter la position du joueur aux limites de la carte
-        player.x = max(0, min(player.x, map_width - 50))
-        player.y = max(0, min(player.y, map_height - 50))
-        
-        # Envoyer la position au serveur (à un taux limité)
-        current_time = pygame.time.get_ticks()
-        if current_time - last_position_update > position_update_rate:
-            last_position_update = current_time
-            send_player_position(sock, player)
-        
-        # Gestion des tirs
-        if keys[pygame.K_SPACE] and current_time - last_shot_time > shot_cooldown:
-            last_shot_time = current_time
+        if player.health > 0:
+            player.update(keys)
             
-            # Déterminer la direction du tir en fonction de la direction du joueur
-            direction = (1, 0)  # Direction par défaut
-            if player.direction == SoldierDirection.LEFT:
-                direction = (-1, 0)
-            elif player.direction == SoldierDirection.RIGHT:
-                direction = (1, 0)
-            elif player.direction == SoldierDirection.BACK:
-                direction = (0, -1)
-            elif player.direction == SoldierDirection.FRONT:
-                direction = (0, 1)
+            # Limiter la position du joueur aux limites de la carte
+            player.x = max(0, min(player.x, map_width - 50))
+            player.y = max(0, min(player.y, map_height - 50))
             
-            # Envoyer le tir au serveur
-            send_shot(sock, player, direction)
+            # Envoyer la position au serveur (à un taux limité)
+            current_time = pygame.time.get_ticks()
+            if current_time - last_position_update > position_update_rate:
+                last_position_update = current_time
+                send_player_position(sock, player)
+            
+            # Gestion des tirs
+            if keys[pygame.K_SPACE] and current_time - last_shot_time > shot_cooldown:
+                last_shot_time = current_time
+                
+                # Déterminer la direction du tir en fonction de la direction du joueur
+                direction = (1, 0)  # Direction par défaut
+                if player.direction == SoldierDirection.LEFT:
+                    direction = (-1, 0)
+                elif player.direction == SoldierDirection.RIGHT:
+                    direction = (1, 0)
+                elif player.direction == SoldierDirection.BACK:
+                    direction = (0, -1)
+                elif player.direction == SoldierDirection.FRONT:
+                    direction = (0, 1)
+                
+                # Envoyer le tir au serveur
+                send_shot(sock, player, direction)
+        else:
+            # Si le joueur vient de mourir, enregistrer le moment
+            if death_timer == 0:
+                death_timer = pygame.time.get_ticks()
         
         # Mise à jour de la caméra pour suivre le joueur en douceur
         target_camera_x = player.x - SCREEN_WIDTH // 2
@@ -564,8 +624,9 @@ def main():
         # Mise à jour des tirs
         update_shots()
         
-        # Vérification des collisions
-        check_shot_collisions()
+        # Vérification des collisions (seulement si le joueur est vivant)
+        if player.health > 0:
+            check_shot_collisions()
         
         # Effacer l'écran
         screen.fill((0, 0, 0))
@@ -573,7 +634,7 @@ def main():
         # Dessiner la carte
         map_manager.draw(screen, camera_x, camera_y)
         
-        # Dessiner les autres joueurs
+        # Dessiner les autres joueurs (seulement ceux qui sont vivants)
         with data_lock:
             other_player_list = list(other_players.items())
         
@@ -586,8 +647,9 @@ def main():
                 other_soldiers[pid].x = pos[0]
                 other_soldiers[pid].y = pos[1]
             
-            # Dessiner le soldat
-            other_soldiers[pid].draw(screen, camera_x, camera_y)
+            # Dessiner le soldat s'il est vivant
+            if other_soldiers[pid].health > 0 or other_soldiers[pid].state != SoldierState.DEAD:
+                other_soldiers[pid].draw(screen, camera_x, camera_y)
         
         # Nettoyer les soldats déconnectés
         with data_lock:
@@ -599,8 +661,13 @@ def main():
         # Dessiner les tirs
         draw_shots(screen, camera_x, camera_y)
         
-        # Dessiner le joueur local
-        player.draw(screen, camera_x, camera_y)
+        # Dessiner le joueur local s'il est vivant
+        if player.health > 0 or player.state != SoldierState.DEAD:
+            player.draw(screen, camera_x, camera_y)
+        
+        # Afficher l'écran de mort si le joueur est mort
+        if player.health <= 0:
+            draw_death_screen(screen)
         
         # Afficher les FPS si activé
         if fps_display:
