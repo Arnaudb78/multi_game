@@ -98,6 +98,8 @@ class Soldier:
     def __init__(self, x, y, soldier_type, name):
         self.x = x
         self.y = y
+        self.prev_x = x  # For vehicle exit position
+        self.prev_y = y  # For vehicle exit position
         self.soldier_type = soldier_type
         self.name = name
         self.state = SoldierState.IDLE

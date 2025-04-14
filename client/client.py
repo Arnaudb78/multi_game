@@ -25,6 +25,7 @@ except ImportError:
 from menu import Menu
 from game.map_manager import MapManager
 from game.soldier import Soldier, SoldierDirection, SoldierState
+from game.vehicle import Vehicle, Tank, VehicleDirection
 
 # Configuration du jeu
 DEFAULT_PORT = 12345
@@ -56,6 +57,11 @@ client_id = None
 other_players = {}  # {client_id: (x, y, pseudo, soldier_type)}
 other_soldiers = {}  # Cache for other players' Soldier objects
 player = None
+player_in_vehicle = False
+current_vehicle = None
+
+# List of vehicles on the map
+vehicles = []
 
 # Camera
 camera_x = 0
@@ -66,6 +72,10 @@ camera_speed = 0.1
 map_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets', 'map', 'map.tmx')
 map_manager = MapManager(map_path)
 map_width, map_height = map_manager.get_map_size()
+
+# Spawn tanks on the map (fixed positions for now)
+vehicles.append(Tank(200, 200, map_width, map_height))  # First tank
+vehicles.append(Tank(600, 400, map_width, map_height))  # Second tank
 
 # Variables globales pour les tirs
 shots = {}  # {shot_id: {'position': (x, y), 'direction': (dx, dy), 'speed': s, 'player_id': pid}}
@@ -164,29 +174,30 @@ def receive_data(sock):
                             other_soldiers[target_id].state = SoldierState.DEAD
                         logger.info(f"Joueur {target_id} touché par {shooter_id} pour {damage} dégâts. Santé: {new_health}")
                 
-                # Message de position (5 éléments: id, pos, pseudo, type, health)
-                elif isinstance(message, tuple) and len(message) >= 5:
-                    player_id, position, pseudo, soldier_type, health = message
+                # Message de position (format complet avec vehicle info)
+                elif isinstance(message, tuple) and len(message) >= 2:
+                    player_id = message[0]
+                    player_data = message[1]
                     
                     # Ne pas traiter notre propre position
                     if player_id != client_id:
                         with data_lock:
-                            other_players[player_id] = (position, pseudo, soldier_type)
-                        
-                        # Mettre à jour la santé et l'état du joueur s'il existe déjà
-                        if player_id in other_soldiers:
-                            other_soldiers[player_id].health = health
-                            if health <= 0:
-                                other_soldiers[player_id].state = SoldierState.DEAD
-                
-                # Message de position (ancien format à 4 éléments)
-                elif isinstance(message, tuple) and len(message) == 4:
-                    player_id, position, pseudo, soldier_type = message
-                    
-                    # Ne pas traiter notre propre position
-                    if player_id != client_id:
-                        with data_lock:
-                            other_players[player_id] = (position, pseudo, soldier_type)
+                            # Extract player data
+                            position = player_data.get('position')
+                            pseudo = player_data.get('pseudo')
+                            soldier_type = player_data.get('soldier_type')
+                            health = player_data.get('health', 100)
+                            in_vehicle = player_data.get('in_vehicle', False)
+                            vehicle_type = player_data.get('vehicle_type')
+                            
+                            # Store player info with vehicle data
+                            other_players[player_id] = (position, pseudo, soldier_type, in_vehicle, vehicle_type)
+                            
+                            # Update soldier health if it exists
+                            if player_id in other_soldiers:
+                                other_soldiers[player_id].health = health
+                                if health <= 0:
+                                    other_soldiers[player_id].state = SoldierState.DEAD
                 
                 # Format de message inconnu
                 else:
@@ -198,10 +209,10 @@ def receive_data(sock):
                 log_exception(e, "Erreur lors du traitement du message")
         
         except socket.error as e:
-            logger.error(f"Erreur de socket: {e}")
+            logger.error(f"Erreur de réception: {e}")
             break
         except Exception as e:
-            log_exception(e, "Erreur dans la fonction receive_data")
+            log_exception(e, "Erreur lors de la réception des données")
             break
     
     logger.info("Thread de réception terminé")
@@ -251,11 +262,15 @@ def load_bullet_images():
 def send_player_position(sock, player):
     """Envoie la position du joueur au serveur"""
     try:
+        global player_in_vehicle, current_vehicle
+        
         position_data = {
             'position': (player.x, player.y),
             'pseudo': player.name,
             'soldier_type': player.soldier_type,
-            'health': player.health
+            'health': player.health,
+            'in_vehicle': player_in_vehicle,
+            'vehicle_type': current_vehicle.vehicle_type.value if player_in_vehicle and current_vehicle else None
         }
         sock.send(pickle.dumps(position_data))
         return True
@@ -427,8 +442,8 @@ def check_shot_collisions():
                 logger.info(f"Touché par le tir de {shot.get('player_id')}!")
                 shots_to_remove.append(shot_id)
                 
-                # Réduire la santé du joueur local
-                damage = 10
+                # Determine damage - higher for tank shots
+                damage = shot.get('damage', 10) if shot.get('is_tank_shot') else 10
                 player.take_damage(damage)
                 
                 # Envoyer une mise à jour de santé au serveur si nous avons une connexion
@@ -447,8 +462,10 @@ def check_shot_collisions():
                         logger.info(f"Tir {shot_id} a touché le joueur {other_id}!")
                         shots_to_remove.append(shot_id)
                         
+                        # Determine damage - higher for tank shots
+                        damage = shot.get('damage', 10) if shot.get('is_tank_shot') else 10
+                        
                         # Envoyer une notification de dégâts au serveur
-                        damage = 10
                         if sock_global:
                             send_hit_notification(sock_global, other_id, damage)
                         break
@@ -492,6 +509,7 @@ def respawn_player(player):
 
 def main():
     global SCREEN_WIDTH, SCREEN_HEIGHT, camera_x, camera_y, player, other_soldiers, sock_global
+    global player_in_vehicle, current_vehicle
     
     sock_global = None
     player_x, player_y = 400, 300
@@ -571,43 +589,101 @@ def main():
                     if sock_global:
                         send_health_update(sock_global, player.health)
                         send_player_position(sock, player)
+                elif event.key == pygame.K_e:
+                    # Handle vehicle entry/exit with E key
+                    if player_in_vehicle and current_vehicle:
+                        # Exit vehicle
+                        current_vehicle.exit_vehicle()
+                        player_in_vehicle = False
+                        current_vehicle = None
+                        if sock_global:
+                            send_player_position(sock, player)
+                    else:
+                        # Try to enter a vehicle if nearby
+                        for vehicle in vehicles:
+                            if vehicle.is_near_player(player.x, player.y):
+                                if vehicle.enter_vehicle(player):
+                                    player_in_vehicle = True
+                                    current_vehicle = vehicle
+                                    break
         
         # Gestion du clavier (seulement si le joueur est vivant)
         keys = pygame.key.get_pressed()
         if player.health > 0:
-            player.update(keys)
-            
-            # Limiter la position du joueur aux limites de la carte
-            player.x = max(0, min(player.x, map_width - 50))
-            player.y = max(0, min(player.y, map_height - 50))
-            
-            # Envoyer la position au serveur (à un taux limité)
-            current_time = pygame.time.get_ticks()
-            if current_time - last_position_update > position_update_rate:
-                last_position_update = current_time
-                send_player_position(sock, player)
-            
-            # Gestion des tirs
-            if keys[pygame.K_SPACE] and current_time - last_shot_time > shot_cooldown:
-                last_shot_time = current_time
+            if player_in_vehicle and current_vehicle:
+                # Update vehicle when player is inside
+                current_vehicle.update(keys)
                 
-                # Déterminer la direction du tir en fonction de la direction du joueur
-                direction = (1, 0)  # Direction par défaut
-                if player.direction == SoldierDirection.LEFT:
-                    direction = (-1, 0)
-                elif player.direction == SoldierDirection.RIGHT:
-                    direction = (1, 0)
-                elif player.direction == SoldierDirection.BACK:
-                    direction = (0, -1)
-                elif player.direction == SoldierDirection.FRONT:
-                    direction = (0, 1)
+                # Envoyer la position au serveur (à un taux limité)
+                current_time = pygame.time.get_ticks()
+                if current_time - last_position_update > position_update_rate:
+                    last_position_update = current_time
+                    send_player_position(sock, player)
                 
-                # Envoyer le tir au serveur
-                send_shot(sock, player, direction)
+                # Handle shooting from vehicle with space key
+                if keys[pygame.K_SPACE] and current_time - last_shot_time > shot_cooldown:
+                    if current_vehicle.shoot():
+                        last_shot_time = current_time
+                        
+                        # Determine shot direction based on tank direction
+                        direction = (1, 0)  # Default direction
+                        if current_vehicle.direction == VehicleDirection.LEFT:
+                            direction = (-1, 0)
+                        elif current_vehicle.direction == VehicleDirection.RIGHT:
+                            direction = (1, 0)
+                        elif current_vehicle.direction == VehicleDirection.BACK:
+                            direction = (0, -1)
+                        elif current_vehicle.direction == VehicleDirection.FRONT:
+                            direction = (0, 1)
+                        
+                        # Send tank shot to server (using same shot system)
+                        # But with higher damage (handled on collision)
+                        send_tank_shot(sock, current_vehicle, direction)
+            else:
+                # Normal player movement when not in vehicle
+                player.update(keys)
+                
+                # Limiter la position du joueur aux limites de la carte
+                player.x = max(0, min(player.x, map_width - 50))
+                player.y = max(0, min(player.y, map_height - 50))
+                
+                # Envoyer la position au serveur (à un taux limité)
+                current_time = pygame.time.get_ticks()
+                if current_time - last_position_update > position_update_rate:
+                    last_position_update = current_time
+                    send_player_position(sock, player)
+                
+                # Update player_nearby flag for vehicles
+                for vehicle in vehicles:
+                    vehicle.player_nearby = vehicle.is_near_player(player.x, player.y)
+                
+                # Gestion des tirs
+                if keys[pygame.K_SPACE] and current_time - last_shot_time > shot_cooldown:
+                    last_shot_time = current_time
+                    
+                    # Déterminer la direction du tir en fonction de la direction du joueur
+                    direction = (1, 0)  # Direction par défaut
+                    if player.direction == SoldierDirection.LEFT:
+                        direction = (-1, 0)
+                    elif player.direction == SoldierDirection.RIGHT:
+                        direction = (1, 0)
+                    elif player.direction == SoldierDirection.BACK:
+                        direction = (0, -1)
+                    elif player.direction == SoldierDirection.FRONT:
+                        direction = (0, 1)
+                    
+                    # Envoyer le tir au serveur
+                    send_shot(sock, player, direction)
         else:
             # Si le joueur vient de mourir, enregistrer le moment
             if death_timer == 0:
                 death_timer = pygame.time.get_ticks()
+                
+                # If player dies while in vehicle, exit the vehicle
+                if player_in_vehicle and current_vehicle:
+                    current_vehicle.exit_vehicle()
+                    player_in_vehicle = False
+                    current_vehicle = None
         
         # Mise à jour de la caméra pour suivre le joueur en douceur
         target_camera_x = player.x - SCREEN_WIDTH // 2
@@ -634,11 +710,27 @@ def main():
         # Dessiner la carte
         map_manager.draw(screen, camera_x, camera_y)
         
+        # Draw vehicles
+        for vehicle in vehicles:
+            vehicle.draw(screen, camera_x, camera_y)
+        
         # Dessiner les autres joueurs (seulement ceux qui sont vivants)
         with data_lock:
             other_player_list = list(other_players.items())
         
-        for pid, (pos, name, soldier_type) in other_player_list:
+        for pid, player_data in other_player_list:
+            # Unpack the player data (now includes vehicle info)
+            if len(player_data) >= 5:  # New format with vehicle info
+                pos, name, soldier_type, in_vehicle, vehicle_type = player_data
+            else:  # Legacy format for backward compatibility
+                pos, name, soldier_type = player_data
+                in_vehicle = False
+                vehicle_type = None
+
+            # Skip drawing players who are in vehicles
+            if in_vehicle:
+                continue
+
             if pid not in other_soldiers:
                 # Créer un nouvel objet Soldier s'il n'existe pas
                 other_soldiers[pid] = Soldier(pos[0], pos[1], soldier_type, name)
@@ -661,8 +753,8 @@ def main():
         # Dessiner les tirs
         draw_shots(screen, camera_x, camera_y)
         
-        # Dessiner le joueur local s'il est vivant
-        if player.health > 0 or player.state != SoldierState.DEAD:
+        # Dessiner le joueur local s'il est vivant et pas dans un véhicule
+        if (player.health > 0 or player.state != SoldierState.DEAD) and not player_in_vehicle:
             player.draw(screen, camera_x, camera_y)
         
         # Afficher l'écran de mort si le joueur est mort
@@ -683,6 +775,40 @@ def main():
     # Fermer la connexion
     sock.close()
     pygame.quit()
+
+def send_tank_shot(sock, vehicle, shot_direction):
+    """Envoie un tir de tank au serveur"""
+    try:
+        # Create shot data with higher speed and damage
+        shot_data = {
+            'shot': {
+                'position': (vehicle.x, vehicle.y),
+                'direction': shot_direction,
+                'speed': 15,  # Faster than regular bullets
+                'player_id': client_id,
+                'is_tank_shot': True,  # Flag to indicate this is a tank shot
+                'damage': vehicle.damage  # Higher damage for tank shots
+            }
+        }
+        
+        # Générer un ID local pour le tir
+        shot_id = str(uuid.uuid4())
+        
+        # Envoyer le tir au serveur
+        sock.send(pickle.dumps(shot_data))
+        
+        # Ajouter le tir localement pour un affichage immédiat
+        with data_lock:
+            shots[shot_id] = shot_data['shot']
+        
+        logger.info(f"Tir de tank envoyé: {shot_id}")
+        return True
+    except socket.error as e:
+        logger.error(f"Erreur d'envoi de tir de tank: {e}")
+        return False
+    except Exception as e:
+        log_exception(e, "Erreur lors de l'envoi du tir de tank")
+        return False
 
 if __name__ == "__main__":
     main()
