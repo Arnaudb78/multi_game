@@ -164,12 +164,14 @@ def receive_data(sock):
                     elif msg[0] == 'shot':
                         # Ajouter le tir à la liste des tirs avec son ID
                         _, shot_id, shot_data = msg
-                        shots[shot_id] = shot_data
+                        if shot_id not in shots:  # Only add if not already present
+                            shots[shot_id] = shot_data
                     elif isinstance(msg, dict) and 'shot' in msg:
                         # Gestion des tirs envoyés par le client
                         shot_data = msg['shot']
                         shot_id = str(uuid.uuid4())
-                        shots[shot_id] = shot_data
+                        if shot_id not in shots:  # Only add if not already present
+                            shots[shot_id] = shot_data
                     else:
                         pid, pos, pseudo, soldier_type = msg
                         if pid != client_id:
@@ -313,14 +315,16 @@ def main():
                 direction = (0, 1)
                 
             shot_data = {
-                'position': (player.x, player.y),
-                'direction': direction,
-                'speed': 10,
-                'player_id': client_id
+                'shot': {
+                    'position': (player.x, player.y),
+                    'direction': direction,
+                    'speed': 10,
+                    'player_id': client_id
+                }
             }
             try:
                 # Envoyer le tir au serveur
-                sock.send(pickle.dumps(('shot', str(uuid.uuid4()), shot_data)))
+                sock.send(pickle.dumps(shot_data))
                 # Changer l'état du joueur pour l'animation de tir
                 player.state = SoldierState.SHOOT
             except socket.error:

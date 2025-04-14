@@ -79,6 +79,13 @@ class ClientThread(threading.Thread):
                                 client_socket.send(pickle.dumps(('shot', shot_id, shot_data)))
                             except socket.error:
                                 continue
+                        
+                        # Mettre à jour la position du joueur après le tir
+                        if isinstance(data, dict) and 'position' in data:
+                            position = data['position']
+                            pseudo = data.get('pseudo', "")
+                            soldier_type = data.get('soldier_type', "falcon")
+                            players[self.client_id] = (self.client_socket, position, pseudo, soldier_type)
                     else:
                         # Mettre à jour la position du joueur
                         if isinstance(data, dict) and 'position' in data:
