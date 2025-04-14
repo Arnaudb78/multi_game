@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 players = {}  # {client_id: (socket, position)}
 client_sockets = {}  # {socket: client_id}
 
+# Dictionnaire des tirs actifs
+shots = {}  # {shot_id: (position, direction, speed)}
+
 
 class ClientThread(threading.Thread):
     def __init__(self, client_socket, client_address):
@@ -59,28 +62,35 @@ class ClientThread(threading.Thread):
                 if not data:
                     break
 
-                # Mettre à jour la position du joueur
+                # Mettre à jour la position du joueur ou gérer les tirs
                 try:
-                    position = pickle.loads(data)
-                    players[self.client_id] = (self.client_socket, position)
+                    data = pickle.loads(data)
+                    if isinstance(data, dict) and 'shot' in data:
+                        # Gérer un nouveau tir
+                        shot_id = str(uuid.uuid4())
+                        shots[shot_id] = data['shot']
+                    else:
+                        # Mettre à jour la position du joueur
+                        position = data
+                        players[self.client_id] = (self.client_socket, position)
                 except Exception as e:
-                    logger.error(f"Error processing player position: {e}")
+                    logger.error(f"Error processing player data: {e}")
                     continue
 
-                # Rate limit updates
-                current_time = time.time()
-                if current_time - last_update >= 1.0 / UPDATE_RATE:
-                    last_update = current_time
-                    # Envoyer les positions de tous les joueurs à tous les clients
-                    for client_socket in client_sockets.keys():
-                        try:
-                            # Envoyer toutes les positions à ce client
-                            for player_id, (_, player_pos) in players.items():
-                                if not self.send_data((player_id, player_pos)):
-                                    break
-                        except socket.error as e:
-                            logger.error(f"Error sending data to client: {e}")
-                            break
+                # Envoyer les positions de tous les joueurs et les tirs à tous les clients
+                for client_socket in client_sockets.keys():
+                    try:
+                        # Envoyer toutes les positions à ce client
+                        for player_id, (_, player_pos) in players.items():
+                            if not self.send_data((player_id, player_pos)):
+                                break
+                        # Envoyer tous les tirs à ce client
+                        for shot_id, shot_data in shots.items():
+                            if not self.send_data(('shot', shot_id, shot_data)):
+                                break
+                    except socket.error as e:
+                        logger.error(f"Error sending data to client: {e}")
+                        break
 
         except socket.error as e:
             logger.error(f"Error in client thread: {e}")

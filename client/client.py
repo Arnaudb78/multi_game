@@ -52,6 +52,9 @@ map_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 map_manager = MapManager(map_path)
 map_width, map_height = map_manager.get_map_size()
 
+# Variables globales pour les tirs
+shots = []  # Liste des tirs actifs
+
 # === SERVER CODE ===
 players = {}  # {client_id: (socket, position, pseudo, soldier_type)}
 client_sockets = {}
@@ -136,7 +139,7 @@ def start_server():
 
 # === CLIENT CODE ===
 def receive_data(sock):
-    global other_players, client_id
+    global other_players, client_id, shots
     buffer = b""
     while True:
         try:
@@ -153,6 +156,10 @@ def receive_data(sock):
                     elif msg[0] == 'disconnect':
                         if msg[1] in other_players:
                             del other_players[msg[1]]
+                    elif msg[0] == 'shot':
+                        # Ajouter le tir à la liste des tirs
+                        _, shot_id, shot_data = msg
+                        shots.append(shot_data)
                     else:
                         pid, pos, pseudo, soldier_type = msg
                         if pid != client_id:
@@ -224,15 +231,27 @@ def main():
         camera_x += (target_camera_x - camera_x) * camera_speed
         camera_y += (target_camera_y - camera_y) * camera_speed
 
-        try:
-            msg = {
+        # Gestion des tirs
+        if keys[pygame.K_SPACE]:  # Supposons que la barre d'espace est utilisée pour tirer
+            shot_data = {
                 'position': (player.x, player.y),
-                'pseudo': pseudo,
-                'soldier_type': soldier_type
+                'direction': (1, 0),  # Direction par défaut
+                'speed': 10
             }
-            sock.send(pickle.dumps(msg))
-        except socket.error:
-            break
+            try:
+                sock.send(pickle.dumps({'shot': shot_data}))
+            except socket.error:
+                break
+
+        # Mettre à jour et dessiner les tirs
+        for shot in shots:
+            # Mettre à jour la position du tir
+            shot['position'] = (
+                shot['position'][0] + shot['direction'][0] * shot['speed'],
+                shot['position'][1] + shot['direction'][1] * shot['speed']
+            )
+            # Dessiner le tir
+            pygame.draw.circle(screen, (255, 0, 0), (int(shot['position'][0] - camera_x), int(shot['position'][1] - camera_y)), 5)
 
         screen.fill((0, 0, 0))
         
@@ -257,6 +276,13 @@ def main():
 
         # Draw current player
         player.draw(screen, camera_x, camera_y)
+
+        # Ajouter une hitbox pour le joueur
+        player_rect = pygame.Rect(player.x, player.y, 50, 50)  # Taille de la hitbox
+        for shot in shots:
+            shot_rect = pygame.Rect(shot['position'][0], shot['position'][1], 5, 5)
+            if player_rect.colliderect(shot_rect):
+                print("Hit!")  # Détecter la collision
 
         pygame.display.flip()
         clock.tick(60)
