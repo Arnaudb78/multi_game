@@ -6,6 +6,8 @@ import uuid
 import logging
 import sys
 import os
+import time
+import traceback
 
 # Add the parent directory to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -22,6 +24,7 @@ HOST = '0.0.0.0'  # Adresse de connection
 PORT = 12345  # Port à utiliser
 
 WHITE = (255, 255, 255)
+RED = (255, 0, 0)
 
 # Initialisation pygame
 pygame.init()
@@ -56,159 +59,86 @@ map_width, map_height = map_manager.get_map_size()
 shots = {}  # {shot_id: {'position': (x, y), 'direction': (dx, dy), 'speed': s, 'player_id': pid}}
 bullet_images = {}  # Cache pour les images de balles
 
-# === SERVER CODE ===
-players = {}  # {client_id: (socket, position, pseudo, soldier_type)}
-client_sockets = {}
+# Verrou pour les données partagées
+data_lock = threading.Lock()
 
+def log_exception(e, message="Exception"):
+    """Log une exception avec sa trace complète"""
+    logger.error(f"{message}: {e}")
+    logger.error(traceback.format_exc())
 
-class ClientThread(threading.Thread):
-    def __init__(self, client_socket, client_address):
-        threading.Thread.__init__(self)
-        self.client_socket = client_socket
-        self.client_address = client_address
-        self.client_id = str(uuid.uuid4())
-        players[self.client_id] = (client_socket, (400, 300), "", "falcon")
-        client_sockets[client_socket] = self.client_id
-
-    def send_data(self, data):
-        try:
-            self.client_socket.send(pickle.dumps(data))
-            return True
-        except socket.error as e:
-            logger.error(f"Erreur envoi client: {e}")
-            return False
-
-    def run(self):
-        try:
-            if not self.send_data(('init', self.client_id)):
-                return
-
-            while True:
-                data = self.client_socket.recv(4096)
-                if not data:
-                    break
-
-                try:
-                    parsed = pickle.loads(data)
-                    if isinstance(parsed, dict):
-                        pos = parsed['position']
-                        pseudo = parsed['pseudo']
-                        soldier_type = parsed['soldier_type']
-                        players[self.client_id] = (
-                            self.client_socket, pos, pseudo, soldier_type
-                        )
-                    else:
-                        continue
-                except Exception as e:
-                    logger.error(f"Erreur parsing: {e}")
-                    continue
-
-                for sock in client_sockets:
-                    for pid, (_, pos, pseudo, soldier_type) in players.items():
-                        try:
-                            sock.send(pickle.dumps((pid, pos, pseudo, soldier_type)))
-                        except socket.error:
-                            continue
-        finally:
-            self.client_socket.close()
-            if self.client_id in players:
-                msg = ('disconnect', self.client_id)
-                for sock in client_sockets:
-                    try:
-                        sock.send(pickle.dumps(msg))
-                    except socket.error:
-                        pass
-                del players[self.client_id]
-            if self.client_socket in client_sockets:
-                del client_sockets[self.client_socket]
-            logger.info(f"Client déconnecté: {self.client_address}")
-
-
-def start_server():
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_socket.bind((HOST, PORT))
-    server_socket.listen(5)
-    logger.info(f"Serveur démarré sur {HOST}:{PORT}")
-
-    while True:
-        client_socket, client_address = server_socket.accept()
-        logger.info(f"Nouvelle connexion de {client_address}")
-        client_thread = ClientThread(client_socket, client_address)
-        client_thread.start()
-
-
-# === CLIENT CODE ===
 def receive_data(sock):
     global other_players, client_id, shots
-    buffer = b""
     
     while True:
         try:
+            # Recevoir les données du serveur
             data = sock.recv(4096)
             if not data:
+                logger.info("Connexion fermée par le serveur")
                 break
-                
-            buffer += data
             
+            # Désérialiser les données
             try:
-                msg = pickle.loads(buffer)
-                buffer = b""  # Vider le buffer après désérialisation réussie
+                message = pickle.loads(data)
                 
-                # Traiter les messages formatés en tuple
-                if isinstance(msg, tuple):
-                    if len(msg) > 0:
-                        if msg[0] == 'init':
-                            client_id = msg[1]
-                            print(f"Connecté avec l'ID: {client_id}")
-                            
-                        elif msg[0] == 'disconnect':
-                            if msg[1] in other_players:
-                                print(f"Joueur déconnecté: {other_players[msg[1]][1]}")
-                                del other_players[msg[1]]
-                            # Supprimer les tirs du joueur déconnecté
-                            shots_to_remove = [shot_id for shot_id, shot_data in shots.items() 
-                                            if shot_data.get('player_id') == msg[1]]
-                            for shot_id in shots_to_remove:
-                                del shots[shot_id]
-                                
-                        elif msg[0] == 'shot':
-                            # Format du message: ('shot', shot_id, shot_data)
-                            if len(msg) >= 3:
-                                shot_id = msg[1]
-                                shot_data = msg[2]
-                                # Ne pas ajouter nos propres tirs car ils sont déjà dans la liste
-                                if shot_data.get('player_id') != client_id or shot_id not in shots:
-                                    shots[shot_id] = shot_data
-                                    print(f"Tir reçu: {shot_id} de joueur {shot_data.get('player_id')}")
+                # Message d'initialisation
+                if isinstance(message, tuple) and len(message) >= 2 and message[0] == 'init':
+                    with data_lock:
+                        client_id = message[1]
+                    logger.info(f"ID client reçu: {client_id}")
+                
+                # Message de déconnexion
+                elif isinstance(message, tuple) and len(message) >= 2 and message[0] == 'disconnect':
+                    player_id = message[1]
+                    with data_lock:
+                        if player_id in other_players:
+                            logger.info(f"Joueur déconnecté: {player_id}")
+                            del other_players[player_id]
                         
-                        # Format position: (client_id, position, pseudo, soldier_type)
-                        elif len(msg) == 4 and isinstance(msg[1], tuple) and len(msg[1]) == 2:
-                            pid, pos, pseudo, soldier_type = msg
-                            if pid != client_id:  # Ne pas traiter notre propre position
-                                other_players[pid] = (pos, pseudo, soldier_type)
+                        # Supprimer les tirs du joueur déconnecté
+                        shots_to_remove = [shot_id for shot_id, shot_data in shots.items() 
+                                          if shot_data.get('player_id') == player_id]
+                        for shot_id in shots_to_remove:
+                            del shots[shot_id]
                 
-                # Traiter les messages formatés en dictionnaire
-                elif isinstance(msg, dict):
-                    if 'position' in msg:
-                        # Ignorer ce message car il s'agit de notre propre position
-                        pass
-                    elif 'shot' in msg:
-                        # Ignorer ce message car c'est notre propre tir
-                        pass
-                    else:
-                        print(f"Message dict inconnu: {msg.keys()}")
-                else:
-                    print(f"Type de message non géré: {type(msg)}")
+                # Message de tir
+                elif isinstance(message, tuple) and len(message) >= 3 and message[0] == 'shot':
+                    shot_id = message[1]
+                    shot_data = message[2]
                     
-            except (pickle.UnpicklingError, IndexError, ValueError, TypeError, AttributeError) as e:
-                print(f"Erreur désérialisation: {e}, type du message: {type(msg) if 'msg' in locals() else 'inconnu'}")
-                buffer = b""  # Vider le buffer en cas d'erreur
+                    # Ne pas traiter nos propres tirs à nouveau (ils sont déjà affichés)
+                    if shot_data.get('player_id') != client_id or shot_id not in shots:
+                        with data_lock:
+                            shots[shot_id] = shot_data
+                        logger.info(f"Tir reçu: {shot_id} de {shot_data.get('player_id')}")
                 
+                # Message de position (4 éléments: id, pos, pseudo, type)
+                elif isinstance(message, tuple) and len(message) == 4:
+                    player_id, position, pseudo, soldier_type = message
+                    
+                    # Ne pas traiter notre propre position
+                    if player_id != client_id:
+                        with data_lock:
+                            other_players[player_id] = (position, pseudo, soldier_type)
+                
+                # Format de message inconnu
+                else:
+                    logger.warning(f"Format de message non reconnu: {type(message)}")
+            
+            except pickle.UnpicklingError as e:
+                logger.error(f"Erreur de désérialisation: {e}")
+            except Exception as e:
+                log_exception(e, "Erreur lors du traitement du message")
+        
         except socket.error as e:
-            print(f"Erreur réception: {e}")
+            logger.error(f"Erreur de socket: {e}")
             break
-
+        except Exception as e:
+            log_exception(e, "Erreur dans la fonction receive_data")
+            break
+    
+    logger.info("Thread de réception terminé")
 
 def load_bullet_images():
     """Charge les images de balles depuis le dossier assets"""
@@ -230,7 +160,7 @@ def load_bullet_images():
             image = pygame.transform.scale(image, new_size)
             horizontal_images.append(image)
         except Exception as e:
-            print(f"Erreur lors du chargement de l'image de balle horizontale {i}: {e}")
+            logger.error(f"Erreur lors du chargement de l'image de balle horizontale {i}: {e}")
     
     # Charger les images de balles verticales
     vertical_images = []
@@ -245,13 +175,164 @@ def load_bullet_images():
             image = pygame.transform.scale(image, new_size)
             vertical_images.append(image)
         except Exception as e:
-            print(f"Erreur lors du chargement de l'image de balle verticale {i}: {e}")
+            logger.error(f"Erreur lors du chargement de l'image de balle verticale {i}: {e}")
     
     bullet_images = {
         'horizontal': horizontal_images,
         'vertical': vertical_images
     }
 
+def send_player_position(sock, player):
+    """Envoie la position du joueur au serveur"""
+    try:
+        position_data = {
+            'position': (player.x, player.y),
+            'pseudo': player.name,
+            'soldier_type': player.soldier_type
+        }
+        sock.send(pickle.dumps(position_data))
+        return True
+    except socket.error as e:
+        logger.error(f"Erreur d'envoi de position: {e}")
+        return False
+    except Exception as e:
+        log_exception(e, "Erreur lors de l'envoi de la position")
+        return False
+
+def send_shot(sock, player, shot_direction):
+    """Envoie un tir au serveur"""
+    try:
+        # Create shot data
+        shot_data = {
+            'shot': {
+                'position': (player.x, player.y),
+                'direction': shot_direction,
+                'speed': 10,
+                'player_id': client_id
+            }
+        }
+        
+        # Générer un ID local pour le tir
+        shot_id = str(uuid.uuid4())
+        
+        # Envoyer le tir au serveur
+        sock.send(pickle.dumps(shot_data))
+        
+        # Ajouter le tir localement pour un affichage immédiat
+        with data_lock:
+            shots[shot_id] = shot_data['shot']
+        
+        # Changer l'état du joueur
+        player.state = SoldierState.SHOOT
+        
+        logger.info(f"Tir envoyé: {shot_id}")
+        return True
+    except socket.error as e:
+        logger.error(f"Erreur d'envoi de tir: {e}")
+        return False
+    except Exception as e:
+        log_exception(e, "Erreur lors de l'envoi du tir")
+        return False
+
+def update_shots():
+    """Met à jour la position de tous les tirs et supprime ceux qui sont hors carte"""
+    shots_to_remove = []
+    
+    with data_lock:
+        for shot_id, shot in list(shots.items()):
+            # Mettre à jour la position du tir
+            new_position = (
+                shot['position'][0] + shot['direction'][0] * shot['speed'],
+                shot['position'][1] + shot['direction'][1] * shot['speed']
+            )
+            shot['position'] = new_position
+            
+            # Vérifier si le tir est sorti de la carte
+            if (new_position[0] < -100 or new_position[0] > map_width + 100 or
+                new_position[1] < -100 or new_position[1] > map_height + 100):
+                shots_to_remove.append(shot_id)
+        
+        # Supprimer les tirs hors carte
+        for shot_id in shots_to_remove:
+            if shot_id in shots:
+                del shots[shot_id]
+
+def draw_shots(screen, camera_x, camera_y):
+    """Dessine tous les tirs à l'écran"""
+    with data_lock:
+        shot_list = list(shots.items())
+    
+    for shot_id, shot in shot_list:
+        # Déterminer si le tir est horizontal ou vertical
+        is_horizontal = abs(shot['direction'][0]) > abs(shot['direction'][1])
+        
+        # Dessiner le tir avec l'image appropriée
+        if is_horizontal and bullet_images.get('horizontal'):
+            # Animation de la balle horizontale
+            animation_frame = (pygame.time.get_ticks() // 50) % len(bullet_images['horizontal'])
+            bullet_image = bullet_images['horizontal'][animation_frame]
+            
+            # Ajuster la position pour centrer l'image
+            draw_x = int(shot['position'][0] - camera_x - bullet_image.get_width() // 2)
+            draw_y = int(shot['position'][1] - camera_y - bullet_image.get_height() // 2)
+            
+            # Inverser l'image si le tir va vers la gauche
+            if shot['direction'][0] < 0:
+                bullet_image = pygame.transform.flip(bullet_image, True, False)
+            
+            screen.blit(bullet_image, (draw_x, draw_y))
+        elif not is_horizontal and bullet_images.get('vertical'):
+            # Animation de la balle verticale
+            animation_frame = (pygame.time.get_ticks() // 50) % len(bullet_images['vertical'])
+            bullet_image = bullet_images['vertical'][animation_frame]
+            
+            # Ajuster la position pour centrer l'image
+            draw_x = int(shot['position'][0] - camera_x - bullet_image.get_width() // 2)
+            draw_y = int(shot['position'][1] - camera_y - bullet_image.get_height() // 2)
+            
+            # Inverser l'image si le tir va vers le haut
+            if shot['direction'][1] < 0:
+                bullet_image = pygame.transform.flip(bullet_image, False, True)
+            
+            screen.blit(bullet_image, (draw_x, draw_y))
+        else:
+            # Fallback si les images ne sont pas disponibles
+            pygame.draw.circle(screen, RED, (int(shot['position'][0] - camera_x), int(shot['position'][1] - camera_y)), 5)
+
+def check_shot_collisions():
+    """Vérifie les collisions entre les tirs et le joueur local"""
+    if player is None:
+        return []
+    
+    shots_to_remove = []
+    
+    with data_lock:
+        # Créer une hitbox pour le joueur local
+        player_rect = pygame.Rect(player.x - 25, player.y - 25, 50, 50)
+        
+        for shot_id, shot in list(shots.items()):
+            # Ne pas vérifier les collisions avec nos propres tirs
+            if shot.get('player_id') == client_id:
+                continue
+            
+            # Créer une hitbox pour le tir
+            shot_rect = pygame.Rect(shot['position'][0] - 5, shot['position'][1] - 5, 10, 10)
+            
+            # Vérifier la collision
+            if player_rect.colliderect(shot_rect):
+                logger.info(f"Touché par le tir de {shot.get('player_id')}!")
+                shots_to_remove.append(shot_id)
+                
+                # Réduire la santé du joueur
+                player.take_damage(10)
+    
+    # Supprimer les tirs qui ont touché le joueur
+    with data_lock:
+        for shot_id in shots_to_remove:
+            if shot_id in shots:
+                del shots[shot_id]
+    
+    return shots_to_remove
 
 def main():
     global SCREEN_WIDTH, SCREEN_HEIGHT, camera_x, camera_y, player, other_soldiers
@@ -274,66 +355,71 @@ def main():
     if action == 'host':
         threading.Thread(target=start_server, daemon=True).start()
         host = '127.0.0.1'
+        # Attendre que le serveur démarre
+        time.sleep(0.5)
     else:
         host = ip
 
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # Désactiver Nagle pour réduire la latence
         sock.connect((host, DEFAULT_PORT))
+        logger.info(f"Connecté au serveur {host}:{DEFAULT_PORT}")
     except socket.error as e:
-        print(f"Erreur de connexion: {e}")
+        logger.error(f"Erreur de connexion: {e}")
         pygame.quit()
         return
 
-    threading.Thread(target=receive_data, args=(sock,), daemon=True).start()
-    clock = pygame.time.Clock()
-    running = True
-    
-    # Limiter la fréquence de tir
-    last_shot_time = 0
-    shot_cooldown = 300  # millisecondes
+    # Démarrer le thread de réception
+    receive_thread = threading.Thread(target=receive_data, args=(sock,), daemon=True)
+    receive_thread.start()
 
-    # Create player soldier
+    # Créer le joueur local
     player = Soldier(player_x, player_y, soldier_type, pseudo)
 
+    # Variables pour la boucle principale
+    clock = pygame.time.Clock()
+    running = True
+    last_shot_time = 0
+    shot_cooldown = 300  # millisecondes
+    last_position_update = 0
+    position_update_rate = 50  # millisecondes
+    fps_display = True
+    
+    # Attendre de recevoir l'ID client
+    wait_start = time.time()
+    while client_id is None:
+        if time.time() - wait_start > 5:  # Timeout de 5 secondes
+            logger.error("Timeout en attendant l'ID client")
+            running = False
+            break
+        time.sleep(0.1)
+    
+    # Boucle principale du jeu
     while running:
+        # Gestion des événements
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
-
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_F3:
+                    fps_display = not fps_display
+        
+        # Gestion du clavier
         keys = pygame.key.get_pressed()
         player.update(keys)
-
-        # Clamp player position to map boundaries
+        
+        # Limiter la position du joueur aux limites de la carte
         player.x = max(0, min(player.x, map_width - 50))
         player.y = max(0, min(player.y, map_height - 50))
-
-        # Send position update to server
-        try:
-            position_data = {
-                'position': (player.x, player.y),
-                'pseudo': player.name,
-                'soldier_type': player.soldier_type
-            }
-            sock.send(pickle.dumps(position_data))
-        except socket.error as e:
-            print(f"Error sending position update: {e}")
-            break
-
-        # Update camera to follow player smoothly
-        target_camera_x = player.x - SCREEN_WIDTH // 2
-        target_camera_y = player.y - SCREEN_HEIGHT // 2
-
-        # Clamp camera to map boundaries
-        target_camera_x = max(0, min(target_camera_x, map_width - SCREEN_WIDTH))
-        target_camera_y = max(0, min(target_camera_y, map_height - SCREEN_HEIGHT))
-
-        # Smooth camera movement
-        camera_x += (target_camera_x - camera_x) * camera_speed
-        camera_y += (target_camera_y - camera_y) * camera_speed
-
-        # Gestion des tirs avec cooldown
+        
+        # Envoyer la position au serveur (à un taux limité)
         current_time = pygame.time.get_ticks()
+        if current_time - last_position_update > position_update_rate:
+            last_position_update = current_time
+            send_player_position(sock, player)
+        
+        # Gestion des tirs
         if keys[pygame.K_SPACE] and current_time - last_shot_time > shot_cooldown:
             last_shot_time = current_time
             
@@ -348,128 +434,76 @@ def main():
             elif player.direction == SoldierDirection.FRONT:
                 direction = (0, 1)
             
-            # Create unique ID for this shot
-            shot_id = str(uuid.uuid4())
-            
-            # Create shot data structure
-            shot_data = {
-                'shot': {
-                    'position': (player.x, player.y),
-                    'direction': direction,
-                    'speed': 10,
-                    'player_id': client_id
-                }
-            }
-            
-            try:
-                # Send shot to server
-                sock.send(pickle.dumps(shot_data))
-                
-                # Add shot locally for immediate display
-                shots[shot_id] = shot_data['shot']
-                
-                # Set player state to shooting
-                player.state = SoldierState.SHOOT
-                print(f"Tir envoyé: {shot_id}")
-            except socket.error as e:
-                print(f"Erreur envoi tir: {e}")
-                break
-
-        # Mettre à jour et dessiner les tirs
-        shots_to_remove = []
-        for shot_id, shot in shots.items():
-            # Mettre à jour la position du tir
-            shot['position'] = (
-                shot['position'][0] + shot['direction'][0] * shot['speed'],
-                shot['position'][1] + shot['direction'][1] * shot['speed']
-            )
-            
-            # Vérifier si le tir est sorti de la carte
-            if (shot['position'][0] < -100 or shot['position'][0] > map_width + 100 or
-                shot['position'][1] < -100 or shot['position'][1] > map_height + 100):
-                shots_to_remove.append(shot_id)
-                continue
-            
-            # Déterminer si le tir est horizontal ou vertical
-            is_horizontal = abs(shot['direction'][0]) > abs(shot['direction'][1])
-            
-            # Dessiner le tir avec l'image appropriée
-            if is_horizontal and bullet_images['horizontal']:
-                # Animation de la balle horizontale
-                animation_frame = (pygame.time.get_ticks() // 50) % len(bullet_images['horizontal'])
-                bullet_image = bullet_images['horizontal'][animation_frame]
-                
-                # Ajuster la position pour centrer l'image
-                draw_x = int(shot['position'][0] - camera_x - bullet_image.get_width() // 2)
-                draw_y = int(shot['position'][1] - camera_y - bullet_image.get_height() // 2)
-                
-                # Inverser l'image si le tir va vers la gauche
-                if shot['direction'][0] < 0:
-                    bullet_image = pygame.transform.flip(bullet_image, True, False)
-                
-                screen.blit(bullet_image, (draw_x, draw_y))
-            elif not is_horizontal and bullet_images['vertical']:
-                # Animation de la balle verticale
-                animation_frame = (pygame.time.get_ticks() // 50) % len(bullet_images['vertical'])
-                bullet_image = bullet_images['vertical'][animation_frame]
-                
-                # Ajuster la position pour centrer l'image
-                draw_x = int(shot['position'][0] - camera_x - bullet_image.get_width() // 2)
-                draw_y = int(shot['position'][1] - camera_y - bullet_image.get_height() // 2)
-                
-                # Inverser l'image si le tir va vers le haut
-                if shot['direction'][1] < 0:
-                    bullet_image = pygame.transform.flip(bullet_image, False, True)
-                
-                screen.blit(bullet_image, (draw_x, draw_y))
-            else:
-                # Fallback si les images ne sont pas disponibles
-                pygame.draw.circle(screen, (255, 0, 0), (int(shot['position'][0] - camera_x), int(shot['position'][1] - camera_y)), 5)
-            
-            # Vérifier les collisions avec le joueur local
-            if shot.get('player_id') != client_id:  # Ne pas vérifier les collisions avec ses propres tirs
-                player_rect = pygame.Rect(player.x - 25, player.y - 25, 50, 50)  # Hitbox centrée
-                shot_rect = pygame.Rect(shot['position'][0] - 5, shot['position'][1] - 5, 10, 10)
-                if player_rect.colliderect(shot_rect):
-                    print(f"Touché par le tir de {shot.get('player_id')}!")
-                    shots_to_remove.append(shot_id)
-                    # Réduire la santé du joueur
-                    player.take_damage(10)
+            # Envoyer le tir au serveur
+            send_shot(sock, player, direction)
         
-        # Supprimer les tirs qui sont sortis de la carte ou ont touché le joueur
-        for shot_id in shots_to_remove:
-            del shots[shot_id]
-
+        # Mise à jour de la caméra pour suivre le joueur en douceur
+        target_camera_x = player.x - SCREEN_WIDTH // 2
+        target_camera_y = player.y - SCREEN_HEIGHT // 2
+        
+        # Limiter la caméra aux limites de la carte
+        target_camera_x = max(0, min(target_camera_x, map_width - SCREEN_WIDTH))
+        target_camera_y = max(0, min(target_camera_y, map_height - SCREEN_HEIGHT))
+        
+        # Mouvement fluide de la caméra
+        camera_x += (target_camera_x - camera_x) * camera_speed
+        camera_y += (target_camera_y - camera_y) * camera_speed
+        
+        # Mise à jour des tirs
+        update_shots()
+        
+        # Vérification des collisions
+        check_shot_collisions()
+        
+        # Effacer l'écran
         screen.fill((0, 0, 0))
         
-        # Draw map
+        # Dessiner la carte
         map_manager.draw(screen, camera_x, camera_y)
         
-        # Draw other players
-        for pid, (pos, name, soldier_type) in other_players.items():
+        # Dessiner les autres joueurs
+        with data_lock:
+            other_player_list = list(other_players.items())
+        
+        for pid, (pos, name, soldier_type) in other_player_list:
             if pid not in other_soldiers:
-                # Create new soldier object only if it doesn't exist
+                # Créer un nouvel objet Soldier s'il n'existe pas
                 other_soldiers[pid] = Soldier(pos[0], pos[1], soldier_type, name)
             else:
-                # Update existing soldier's position
+                # Mettre à jour la position du soldat existant
                 other_soldiers[pid].x = pos[0]
                 other_soldiers[pid].y = pos[1]
+            
+            # Dessiner le soldat
             other_soldiers[pid].draw(screen, camera_x, camera_y)
-
-        # Clean up disconnected players
-        disconnected_players = set(other_soldiers.keys()) - set(other_players.keys())
+        
+        # Nettoyer les soldats déconnectés
+        with data_lock:
+            disconnected_players = set(other_soldiers.keys()) - set(other_players.keys())
+        
         for pid in disconnected_players:
             del other_soldiers[pid]
-
-        # Draw current player
+        
+        # Dessiner les tirs
+        draw_shots(screen, camera_x, camera_y)
+        
+        # Dessiner le joueur local
         player.draw(screen, camera_x, camera_y)
-
+        
+        # Afficher les FPS si activé
+        if fps_display:
+            fps_text = font.render(f"FPS: {int(clock.get_fps())}", True, WHITE)
+            screen.blit(fps_text, (10, 10))
+        
+        # Rafraîchir l'écran
         pygame.display.flip()
+        
+        # Limiter les FPS
         clock.tick(60)
-
+    
+    # Fermer la connexion
     sock.close()
     pygame.quit()
-
 
 if __name__ == "__main__":
     main()
