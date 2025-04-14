@@ -65,46 +65,45 @@ class ClientThread(threading.Thread):
                 # Mettre à jour la position du joueur ou gérer les tirs
                 try:
                     data = pickle.loads(data)
-                    if isinstance(data, dict):
-                        if 'shot' in data:
-                            # Gérer un nouveau tir
-                            shot_id = str(uuid.uuid4())
-                            shot_data = data['shot']
-                            # Ajouter l'ID du joueur qui a tiré
-                            shot_data['player_id'] = self.client_id
-                            shots[shot_id] = shot_data
-                            
-                            # Envoyer immédiatement le tir à tous les clients
-                            for client_socket in client_sockets.keys():
-                                try:
-                                    client_socket.send(pickle.dumps(('shot', shot_id, shot_data)))
-                                except socket.error:
-                                    continue
+                    
+                    # Handle shot data
+                    if isinstance(data, dict) and 'shot' in data:
+                        shot_id = str(uuid.uuid4())
+                        shot_data = data['shot']
+                        shot_data['player_id'] = self.client_id
+                        shots[shot_id] = shot_data
                         
-                        if 'position' in data:
-                            # Mettre à jour la position du joueur
-                            position = data['position']
-                            pseudo = data.get('pseudo', "")
-                            soldier_type = data.get('soldier_type', "falcon")
-                            players[self.client_id] = (self.client_socket, position, pseudo, soldier_type)
-                    else:
-                        # Handle legacy position format (if any)
+                        # Broadcast shot to all clients
+                        for client_socket in client_sockets.keys():
+                            try:
+                                client_socket.send(pickle.dumps(('shot', shot_id, shot_data)))
+                            except socket.error:
+                                continue
+                    
+                    # Handle position data
+                    if isinstance(data, dict) and 'position' in data:
+                        position = data['position']
+                        pseudo = data.get('pseudo', "")
+                        soldier_type = data.get('soldier_type', "falcon")
+                        players[self.client_id] = (self.client_socket, position, pseudo, soldier_type)
+                    elif isinstance(data, tuple) and len(data) == 2:
+                        # Legacy position format
                         position = data
                         players[self.client_id] = (self.client_socket, position, "", "falcon")
+                    
+                    # Broadcast player positions to all clients
+                    for client_socket in client_sockets.keys():
+                        try:
+                            for player_id, (_, pos, pseudo, soldier_type) in players.items():
+                                if not self.send_data((player_id, pos, pseudo, soldier_type)):
+                                    break
+                        except socket.error as e:
+                            logger.error(f"Error sending data to client: {e}")
+                            break
+                            
                 except Exception as e:
                     logger.error(f"Error processing player data: {e}")
                     continue
-
-                # Envoyer les positions de tous les joueurs à tous les clients
-                for client_socket in client_sockets.keys():
-                    try:
-                        # Envoyer toutes les positions à ce client
-                        for player_id, (_, pos, pseudo, soldier_type) in players.items():
-                            if not self.send_data((player_id, pos, pseudo, soldier_type)):
-                                break
-                    except socket.error as e:
-                        logger.error(f"Error sending data to client: {e}")
-                        break
 
         except socket.error as e:
             logger.error(f"Error in client thread: {e}")

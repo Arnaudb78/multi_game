@@ -282,6 +282,7 @@ def main():
                 'pseudo': player.name,
                 'soldier_type': player.soldier_type
             }
+            # Send position data as a dictionary
             sock.send(pickle.dumps(position_data))
         except socket.error as e:
             print(f"Error sending position update: {e}")
