@@ -4,9 +4,15 @@ import threading
 import pickle
 import uuid
 import logging
+import sys
+import os
+
+# Add the parent directory to the Python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from menu import Menu
-from map_manager import MapManager
-from soldier import Soldier
+from game.map_manager import MapManager
+from game.soldier import Soldier
 
 # Configuration du jeu
 DEFAULT_PORT = 12345
@@ -41,7 +47,8 @@ camera_y = 0
 camera_speed = 0.1
 
 # Map
-map_manager = MapManager("assets/map/map.tmx")
+map_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets', 'map', 'map.tmx')
+map_manager = MapManager(map_path)
 map_width, map_height = map_manager.get_map_size()
 
 # === SERVER CODE ===
@@ -55,7 +62,7 @@ class ClientThread(threading.Thread):
         self.client_socket = client_socket
         self.client_address = client_address
         self.client_id = str(uuid.uuid4())
-        players[self.client_id] = (client_socket, (400, 300), "", "Falcon")
+        players[self.client_id] = (client_socket, (400, 300), "", "falcon")
         client_sockets[client_socket] = self.client_id
 
     def send_data(self, data):

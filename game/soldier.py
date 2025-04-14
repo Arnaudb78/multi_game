@@ -33,11 +33,24 @@ class Bullet:
         self.load_images()
         
     def load_images(self):
-        base_path = "assets/Objects/Bullet"
+        # Get the absolute path of the current file
+        current_file_path = os.path.abspath(__file__)
+        # Go up two directories to reach the multiplayer directory
+        multiplayer_dir = os.path.dirname(os.path.dirname(current_file_path))
+        # Construct the path to the assets directory
+        base_path = os.path.join(multiplayer_dir, 'assets', 'Objects', 'Bullet')
+        
+        print(f"Loading bullet images from: {base_path}")  # Debug print
+        
+        # Verify the directory exists
+        if not os.path.exists(base_path):
+            raise Exception(f"Bullet assets directory not found: {base_path}")
+        
         prefix = "Horizontal" if self.direction in [SoldierDirection.LEFT, SoldierDirection.RIGHT] else "Vertical"
         for i in range(1, 11):
             try:
                 image_path = os.path.join(base_path, f"{prefix} ({i}).png")
+                print(f"Trying to load bullet image: {image_path}")  # Debug print
                 image = pygame.image.load(image_path).convert_alpha()
                 image.set_colorkey((0, 0, 0))
                 # Scale up the image
@@ -48,7 +61,12 @@ class Bullet:
                 )
                 image = pygame.transform.scale(image, new_size)
                 self.images.append(image)
+                print(f"Successfully loaded bullet image: {image_path}")  # Debug print
             except FileNotFoundError:
+                print(f"Could not find bullet image: {image_path}")
+                break
+            except Exception as e:
+                print(f"Error loading bullet image {image_path}: {str(e)}")
                 break
 
     def update(self):
@@ -98,8 +116,23 @@ class Soldier:
 
     def load_animations(self):
         # Handle case sensitivity for soldier type
-        soldier_folder = "Rogue" if self.soldier_type == "Rogue" else "falcon"
-        base_path = f"assets/soldiers/{soldier_folder}"
+        soldier_folder = "rogue" if self.soldier_type.lower() == "rogue" else "falcon"
+        
+        # Get the absolute path of the current file
+        current_file_path = os.path.abspath(__file__)
+        print(f"Current file path: {current_file_path}")  # Debug print
+        
+        # Go up two directories to reach the multiplayer directory
+        multiplayer_dir = os.path.dirname(os.path.dirname(current_file_path))
+        print(f"Multiplayer directory: {multiplayer_dir}")  # Debug print
+        
+        # Construct the path to the assets directory
+        base_path = os.path.join(multiplayer_dir, 'assets', 'soldiers', soldier_folder)
+        print(f"Base path: {base_path}")  # Debug print
+        
+        # Verify the directory exists
+        if not os.path.exists(base_path):
+            raise Exception(f"Soldier assets directory not found: {base_path}. Please check if the directory exists and contains the correct files.")
         
         for direction in SoldierDirection:
             self.images[direction] = {}
@@ -115,6 +148,8 @@ class Soldier:
                             direction.value, 
                             f"{state.value} ({i}).png"
                         )
+                        print(f"Trying to load: {image_path}")  # Debug print
+                        
                         # Load and convert image with alpha channel
                         image = pygame.image.load(image_path).convert_alpha()
                         # Remove black background
@@ -129,28 +164,26 @@ class Soldier:
                         if direction in [SoldierDirection.LEFT, SoldierDirection.RIGHT]:
                             image = pygame.transform.flip(image, True, False)
                         self.images[direction][state].append(image)
+                        print(f"Successfully loaded: {image_path}")  # Debug print
                     except FileNotFoundError:
-                        # If we can't find the animation, try without the number
-                        try:
-                            image_path = os.path.join(
-                                base_path, 
-                                direction.value, 
-                                f"{state.value}.png"
-                            )
-                            image = pygame.image.load(image_path).convert_alpha()
-                            # Remove black background
-                            image.set_colorkey((0, 0, 0))
-                            new_size = (
-                                int(image.get_width() * self.scale_factor),
-                                int(image.get_height() * self.scale_factor)
-                            )
-                            image = pygame.transform.scale(image, new_size)
-                            # Flip sprites to face the correct direction
-                            if direction in [SoldierDirection.LEFT, SoldierDirection.RIGHT]:
-                                image = pygame.transform.flip(image, True, False)
-                            self.images[direction][state].append(image)
-                        except FileNotFoundError:
-                            break
+                        print(f"Could not find image: {image_path}")
+                        continue
+                    except Exception as e:
+                        print(f"Error loading image {image_path}: {str(e)}")
+                        continue
+
+        # Verify that we have loaded at least some images
+        has_images = False
+        for direction in self.images:
+            for state in self.images[direction]:
+                if self.images[direction][state]:
+                    has_images = True
+                    break
+            if has_images:
+                break
+
+        if not has_images:
+            raise Exception(f"No images were loaded for soldier type: {self.soldier_type}. Check if the path is correct: {base_path}")
 
     def update(self, keys, other_soldiers=None):
         # Update position based on keys
