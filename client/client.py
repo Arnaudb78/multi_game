@@ -253,12 +253,24 @@ def receive_data(sock):
                         player.health = new_health
                         if new_health <= 0:
                             player.state = SoldierState.DEAD
+                        else:
+                            # Make sure we continue moving normally if still alive
+                            player.state = SoldierState.IDLE
+                            
                         logger.info(f"Vous avez été touché par {shooter_id} pour {damage} dégâts. Santé: {new_health}")
+                        
+                        # Force a position update to ensure sync
+                        if sock_global:
+                            send_player_position(sock_global, player)
+                    
                     # Si un autre joueur est touché, mettre à jour sa santé
                     elif target_id in other_soldiers:
                         other_soldiers[target_id].health = new_health
                         if new_health <= 0:
                             other_soldiers[target_id].state = SoldierState.DEAD
+                        else:
+                            other_soldiers[target_id].state = SoldierState.IDLE
+                            
                         logger.info(f"Joueur {target_id} touché par {shooter_id} pour {damage} dégâts. Santé: {new_health}")
                 
                 # Message de notification de dégâts au véhicule
@@ -277,6 +289,18 @@ def receive_data(sock):
                         # Envoyer une mise à jour de position avec les informations du véhicule
                         if sock_global:
                             send_player_position(sock_global, player)
+                            
+                        # If vehicle is destroyed, force player out
+                        if current_vehicle.health <= 0:
+                            player_exited = current_vehicle.exit_vehicle()
+                            if player_exited:
+                                player_in_vehicle = False
+                                current_vehicle.occupied = False
+                                current_vehicle = None
+                                
+                                # Force position update after exiting destroyed vehicle
+                                if sock_global:
+                                    send_player_position(sock_global, player)
                 
                 # Message de position (format complet avec vehicle info)
                 elif isinstance(message, tuple) and len(message) >= 2:
@@ -659,6 +683,10 @@ def check_shot_collisions():
                     damage = shot.get('damage', 10) if shot.get('is_tank_shot') else 10
                     player.take_damage(damage)
                     
+                    # Make sure player stays in a movable state
+                    if player.health > 0:
+                        player.state = SoldierState.IDLE
+                    
                     # Play hit sound
                     play_hit_sound()
                     
@@ -666,6 +694,8 @@ def check_shot_collisions():
                     global sock_global
                     if sock_global:
                         send_health_update(sock_global, player.health)
+                        # Also send position update to ensure sync
+                        send_player_position(sock_global, player)
         
         # Check collisions with player's vehicle if in one
         elif player_in_vehicle and current_vehicle:
@@ -974,14 +1004,18 @@ def main():
         
         # Gestion du clavier (seulement si le joueur est vivant)
         keys = pygame.key.get_pressed()
+        
+        # Variables pour déterminer si la position a changé
+        player_moved = False
+        current_time = pygame.time.get_ticks()
+        
         if player.health > 0:
             if player_in_vehicle and current_vehicle:
                 # Update vehicle when player is inside
-                current_vehicle.update(keys)
+                player_moved = current_vehicle.update(keys)
                 
-                # Envoyer la position au serveur (à un taux limité)
-                current_time = pygame.time.get_ticks()
-                if current_time - last_position_update > position_update_rate:
+                # Normal position update when moving
+                if player_moved or current_time - last_position_update > position_update_rate:
                     last_position_update = current_time
                     send_player_position(sock, player)
                 
@@ -1006,15 +1040,14 @@ def main():
                         send_tank_shot(sock, current_vehicle, direction)
             else:
                 # Normal player movement when not in vehicle
-                player.update(keys)
+                player_moved = player.update(keys)
                 
                 # Limiter la position du joueur aux limites de la carte
                 player.x = max(0, min(player.x, map_width - 50))
                 player.y = max(0, min(player.y, map_height - 50))
                 
-                # Envoyer la position au serveur (à un taux limité)
-                current_time = pygame.time.get_ticks()
-                if current_time - last_position_update > position_update_rate:
+                # Normal position update when moving
+                if player_moved or current_time - last_position_update > position_update_rate:
                     last_position_update = current_time
                     send_player_position(sock, player)
                 
@@ -1061,6 +1094,13 @@ def main():
         # Mouvement fluide de la caméra
         camera_x += (target_camera_x - camera_x) * camera_speed
         camera_y += (target_camera_y - camera_y) * camera_speed
+        
+        # Force position update every 2 seconds even if not moving
+        force_update_interval = 2000  # ms
+        if player and player.health > 0 and current_time - last_position_update > force_update_interval:
+            last_position_update = current_time
+            if sock_global:
+                send_player_position(sock, player)
         
         # Mise à jour des tirs
         update_shots()

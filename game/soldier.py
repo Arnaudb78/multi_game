@@ -188,23 +188,30 @@ class Soldier:
             raise Exception(f"No images were loaded for soldier type: {self.soldier_type}. Check if the path is correct: {base_path}")
 
     def update(self, keys, other_soldiers=None):
+        # Track if player moved
+        player_moved = False
+        
         # Update position based on keys
         if keys[pygame.K_LEFT]:
             self.x -= 5
             self.direction = SoldierDirection.LEFT
             self.state = SoldierState.WALK
+            player_moved = True
         elif keys[pygame.K_RIGHT]:
             self.x += 5
             self.direction = SoldierDirection.RIGHT
             self.state = SoldierState.WALK
+            player_moved = True
         elif keys[pygame.K_UP]:
             self.y -= 5
             self.direction = SoldierDirection.BACK
             self.state = SoldierState.WALK
+            player_moved = True
         elif keys[pygame.K_DOWN]:
             self.y += 5
             self.direction = SoldierDirection.FRONT
             self.state = SoldierState.WALK
+            player_moved = True
         else:
             self.state = SoldierState.IDLE
 
@@ -246,6 +253,8 @@ class Soldier:
             if (bullet.x < -100 or bullet.x > 2000 or 
                 bullet.y < -100 or bullet.y > 2000):
                 self.bullets.remove(bullet)
+                
+        return player_moved
 
     def shoot(self):
         # Create a new bullet based on the soldier's direction
