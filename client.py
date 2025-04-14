@@ -14,6 +14,7 @@ SCREEN_WIDTH, SCREEN_HEIGHT = 800, 600
 player_speed = 5
 HOST = '0.0.0.0'  # Adresse de connection
 PORT = 12345  # Port à utiliser
+NETWORK_UPDATE_RATE = 20  # Updates per second
 
 WHITE = (255, 255, 255)
 
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 # Variables globales
 client_id = None
 other_players = {}  # {client_id: (x, y, pseudo, soldier_type)}
+other_soldiers = {}  # {client_id: Soldier}  # Cache of soldier objects
 player = None
 
 # Camera
@@ -128,7 +130,7 @@ def start_server():
 
 # === CLIENT CODE ===
 def receive_data(sock):
-    global other_players, client_id
+    global other_players, other_soldiers, client_id
     buffer = b""
     while True:
         try:
@@ -145,10 +147,18 @@ def receive_data(sock):
                     elif msg[0] == 'disconnect':
                         if msg[1] in other_players:
                             del other_players[msg[1]]
+                            if msg[1] in other_soldiers:
+                                del other_soldiers[msg[1]]
                     else:
                         pid, pos, pseudo, soldier_type = msg
                         if pid != client_id:
                             other_players[pid] = (pos, pseudo, soldier_type)
+                            # Create or update soldier object
+                            if pid not in other_soldiers:
+                                other_soldiers[pid] = Soldier(pos[0], pos[1], soldier_type, pseudo)
+                            else:
+                                other_soldiers[pid].x = pos[0]
+                                other_soldiers[pid].y = pos[1]
                 except pickle.UnpicklingError:
                     break
         except socket.error as e:
@@ -157,8 +167,9 @@ def receive_data(sock):
 
 
 def main():
-    global SCREEN_WIDTH, SCREEN_HEIGHT, camera_x, camera_y, player
+    global SCREEN_WIDTH, SCREEN_HEIGHT, camera_x, camera_y, player, last_network_update
     player_x, player_y = 400, 300
+    last_network_update = 0  # Initialize the network update timer
 
     menu = Menu(screen)
     action, ip = menu.show()
@@ -193,6 +204,8 @@ def main():
     player = Soldier(player_x, player_y, soldier_type, pseudo)
 
     while running:
+        current_time = pygame.time.get_ticks()
+        
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -216,15 +229,18 @@ def main():
         camera_x += (target_camera_x - camera_x) * camera_speed
         camera_y += (target_camera_y - camera_y) * camera_speed
 
-        try:
-            msg = {
-                'position': (player.x, player.y),
-                'pseudo': pseudo,
-                'soldier_type': soldier_type
-            }
-            sock.send(pickle.dumps(msg))
-        except socket.error:
-            break
+        # Send position update at fixed rate
+        if current_time - last_network_update >= 1000 / NETWORK_UPDATE_RATE:
+            try:
+                msg = {
+                    'position': (player.x, player.y),
+                    'pseudo': pseudo,
+                    'soldier_type': soldier_type
+                }
+                sock.send(pickle.dumps(msg))
+                last_network_update = current_time
+            except socket.error:
+                break
 
         screen.fill((0, 0, 0))
         
@@ -232,9 +248,8 @@ def main():
         map_manager.draw(screen, camera_x, camera_y)
         
         # Draw other players
-        for pid, (pos, name, soldier_type) in other_players.items():
-            other_soldier = Soldier(pos[0], pos[1], soldier_type, name)
-            other_soldier.draw(screen, camera_x, camera_y)
+        for pid, soldier in other_soldiers.items():
+            soldier.draw(screen, camera_x, camera_y)
 
         # Draw current player
         player.draw(screen, camera_x, camera_y)

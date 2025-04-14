@@ -3,11 +3,14 @@ import threading
 import logging
 import pickle
 import uuid
+import time
 
 
 # Configuration du serveur
 HOST = '0.0.0.0'  # Adresse de connection
 PORT = 12345        # Port à utiliser
+UPDATE_RATE = 20  # Updates per second
+POSITION_THRESHOLD = 2.0  # Minimum distance change to trigger update
 
 # Configuration du logging
 logging.basicConfig(
@@ -17,7 +20,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Dictionnaire des joueurs avec leurs positions
-players = {}  # {client_id: (socket, position)}
+players = {}  # {client_id: (socket, position, last_update_time)}
 client_sockets = {}  # {socket: client_id}
 
 
@@ -27,8 +30,9 @@ class ClientThread(threading.Thread):
         self.client_socket = client_socket
         self.client_address = client_address
         self.client_id = str(uuid.uuid4())
-        players[self.client_id] = (client_socket, (400, 300))  # Position initiale
+        players[self.client_id] = (client_socket, (400, 300), time.time())
         client_sockets[client_socket] = self.client_id
+        self.last_position = (400, 300)
 
     def send_data(self, data):
         try:
@@ -45,7 +49,7 @@ class ClientThread(threading.Thread):
                 return
             
             # Envoyer l'état actuel de tous les joueurs au nouveau client
-            for player_id, (_, player_pos) in players.items():
+            for player_id, (_, player_pos, _) in players.items():
                 if player_id != self.client_id:  # Ne pas envoyer sa propre position
                     if not self.send_data((player_id, player_pos)):
                         return
@@ -58,21 +62,30 @@ class ClientThread(threading.Thread):
                 # Mettre à jour la position du joueur
                 try:
                     position = pickle.loads(data)
-                    players[self.client_id] = (self.client_socket, position)
+                    current_time = time.time()
+                    
+                    # Check if position has changed significantly
+                    dx = position[0] - self.last_position[0]
+                    dy = position[1] - self.last_position[1]
+                    distance = (dx*dx + dy*dy) ** 0.5
+                    
+                    if distance >= POSITION_THRESHOLD or current_time - players[self.client_id][2] >= 1.0/UPDATE_RATE:
+                        self.last_position = position
+                        players[self.client_id] = (self.client_socket, position, current_time)
+                        
+                        # Envoyer les positions de tous les joueurs à tous les clients
+                        for client_socket in client_sockets.keys():
+                            try:
+                                # Envoyer toutes les positions à ce client
+                                for player_id, (_, player_pos, _) in players.items():
+                                    if not self.send_data((player_id, player_pos)):
+                                        break
+                            except socket.error as e:
+                                logger.error(f"Error sending data to client: {e}")
+                                break
                 except Exception as e:
                     logger.error(f"Error processing player position: {e}")
                     continue
-
-                # Envoyer les positions de tous les joueurs à tous les clients
-                for client_socket in client_sockets.keys():
-                    try:
-                        # Envoyer toutes les positions à ce client
-                        for player_id, (_, player_pos) in players.items():
-                            if not self.send_data((player_id, player_pos)):
-                                break
-                    except socket.error as e:
-                        logger.error(f"Error sending data to client: {e}")
-                        break
 
         except socket.error as e:
             logger.error(f"Error in client thread: {e}")
