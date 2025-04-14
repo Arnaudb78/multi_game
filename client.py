@@ -33,8 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Variables globales
 client_id = None
-other_players = {}  # {client_id: (x, y, pseudo, soldier_type, health)}
-other_soldiers = {}  # {client_id: Soldier}  # Cache of soldier objects
+other_players = {}  # {client_id: Soldier}  # Cache of soldier objects
 player = None
 bullets = []  # List of active bullets: [(x, y, direction, owner_id)]
 
@@ -131,7 +130,7 @@ def start_server():
 
 # === CLIENT CODE ===
 def receive_data(sock):
-    global other_players, other_soldiers, client_id, bullets
+    global other_players, client_id, bullets
     buffer = b""
     while True:
         try:
@@ -148,24 +147,17 @@ def receive_data(sock):
                     elif msg[0] == 'disconnect':
                         if msg[1] in other_players:
                             del other_players[msg[1]]
-                            if msg[1] in other_soldiers:
-                                del other_soldiers[msg[1]]
                     elif msg[0] == 'player':
-                        pid, pos, health = msg[1:]
+                        pid, x, y, soldier_type, name, health = msg[1:]
                         if pid != client_id:
-                            # Update or create player data
+                            # Update or create player
                             if pid in other_players:
-                                # Update existing player
-                                other_players[pid] = (pos[0], pos[1], other_players[pid][2], other_players[pid][3], health)
-                                if pid in other_soldiers:
-                                    other_soldiers[pid].x = pos[0]
-                                    other_soldiers[pid].y = pos[1]
-                                    other_soldiers[pid].health = health
+                                other_players[pid].x = x
+                                other_players[pid].y = y
+                                other_players[pid].health = health
                             else:
-                                # Create new player
-                                other_players[pid] = (pos[0], pos[1], "Player", "Falcon", health)  # Default values
-                                other_soldiers[pid] = Soldier(pos[0], pos[1], "Falcon", "Player")
-                                other_soldiers[pid].health = health
+                                other_players[pid] = Soldier(x, y, soldier_type, name)
+                                other_players[pid].health = health
                     elif msg[0] == 'bullet':
                         # Add or update bullet
                         x, y, direction, owner_id = msg[1:]
@@ -272,7 +264,7 @@ def main():
         map_manager.draw(screen, camera_x, camera_y)
         
         # Draw other players
-        for pid, soldier in other_soldiers.items():
+        for pid, soldier in other_players.items():
             soldier.draw(screen, camera_x, camera_y)
 
         # Draw current player

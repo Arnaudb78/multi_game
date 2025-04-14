@@ -4,6 +4,7 @@ import logging
 import pickle
 import uuid
 import time
+from soldier import Soldier, SoldierDirection
 
 
 # Configuration du serveur
@@ -20,7 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Dictionnaire des joueurs avec leurs positions et états
-players = {}  # {client_id: (socket, position, health, last_update_time)}
+players = {}  # {client_id: (socket, soldier, last_update_time)}
 client_sockets = {}  # {socket: client_id}
 bullets = []  # List of active bullets: [(x, y, direction, owner_id)]
 
@@ -31,7 +32,9 @@ class ClientThread(threading.Thread):
         self.client_socket = client_socket
         self.client_address = client_address
         self.client_id = str(uuid.uuid4())
-        players[self.client_id] = (client_socket, (400, 300), 100, time.time())
+        # Create initial soldier
+        initial_soldier = Soldier(400, 300, "Falcon", "Player")
+        players[self.client_id] = (client_socket, initial_soldier, time.time())
         client_sockets[client_socket] = self.client_id
         self.last_position = (400, 300)
 
@@ -59,14 +62,14 @@ class ClientThread(threading.Thread):
                 y += 10
             
             # Check for collisions with players
-            for pid, (_, pos, health, _) in players.items():
+            for pid, (_, soldier, _) in players.items():
                 if pid != owner_id:  # Don't check collision with shooter
-                    dx = x - pos[0]
-                    dy = y - pos[1]
+                    dx = x - soldier.x
+                    dy = y - soldier.y
                     distance = (dx*dx + dy*dy) ** 0.5
                     if distance < 20:  # Collision radius
                         # Apply damage
-                        players[pid] = (players[pid][0], pos, max(0, health - 10), players[pid][3])
+                        soldier.take_damage(10)
                         bullets.remove(bullet)
                         break
             
@@ -84,9 +87,10 @@ class ClientThread(threading.Thread):
                 return
             
             # Send current state of all players to new client
-            for player_id, (_, player_pos, health, _) in players.items():
+            for player_id, (_, soldier, _) in players.items():
                 if player_id != self.client_id:
-                    if not self.send_data(('player', player_id, player_pos, health)):
+                    if not self.send_data(('player', player_id, soldier.x, soldier.y, 
+                                         soldier.soldier_type, soldier.name, soldier.health)):
                         return
             
             while True:
@@ -105,16 +109,22 @@ class ClientThread(threading.Thread):
                         dy = position[1] - self.last_position[1]
                         distance = (dx*dx + dy*dy) ** 0.5
                         
-                        if distance >= POSITION_THRESHOLD or current_time - players[self.client_id][3] >= 1.0/UPDATE_RATE:
+                        if distance >= POSITION_THRESHOLD or current_time - players[self.client_id][2] >= 1.0/UPDATE_RATE:
                             self.last_position = position
-                            players[self.client_id] = (self.client_socket, position, players[self.client_id][2], current_time)
+                            # Update soldier position
+                            players[self.client_id][1].x = position[0]
+                            players[self.client_id][1].y = position[1]
+                            players[self.client_id] = (players[self.client_id][0], 
+                                                     players[self.client_id][1], 
+                                                     current_time)
                             
                             # Send updates to all clients
                             for client_socket in client_sockets.keys():
                                 try:
-                                    # Send all player positions and health
-                                    for player_id, (_, player_pos, health, _) in players.items():
-                                        if not self.send_data(('player', player_id, player_pos, health)):
+                                    # Send all player positions and states
+                                    for player_id, (_, soldier, _) in players.items():
+                                        if not self.send_data(('player', player_id, soldier.x, soldier.y,
+                                                             soldier.soldier_type, soldier.name, soldier.health)):
                                             break
                                     # Send all active bullets
                                     for bullet in bullets:
