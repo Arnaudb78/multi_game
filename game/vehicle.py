@@ -97,11 +97,18 @@ class Vehicle:
 
     def draw_health_bar(self, screen, x, y):
         # Health bar dimensions
-        bar_width = 50
-        bar_height = 5
+        bar_width = 60  # Wider bar
+        bar_height = 8  # Taller bar for better visibility
         
         # Calculate health percentage
         health_percentage = self.health / self.max_health
+        
+        # Add a black outline for better visibility
+        pygame.draw.rect(
+            screen,
+            (0, 0, 0),
+            (x - 2, y - 17, bar_width + 4, bar_height + 4)
+        )
         
         # Draw background (red)
         pygame.draw.rect(
@@ -110,10 +117,18 @@ class Vehicle:
             (x, y - 15, bar_width, bar_height)
         )
         
-        # Draw foreground (green) proportional to health
+        # Choose color based on health percentage (green -> yellow -> red gradient)
+        if health_percentage > 0.6:
+            color = (0, 255, 0)  # Green for high health
+        elif health_percentage > 0.3:
+            color = (255, 255, 0)  # Yellow for medium health
+        else:
+            color = (255, 165, 0)  # Orange for low health
+        
+        # Draw foreground proportional to health
         pygame.draw.rect(
             screen,
-            (0, 255, 0),
+            color,
             (x, y - 15, int(bar_width * health_percentage), bar_height)
         )
 
@@ -126,12 +141,22 @@ class Vehicle:
             # Draw health bar
             self.draw_health_bar(screen, draw_x + self.current_image.get_width() // 2 - 25, draw_y)
             
+            # Draw text indicating status
+            font = pygame.font.Font(None, 24)
+            if self.occupied:
+                text = font.render("Occupied", True, (255, 0, 0))
+                screen.blit(text, (draw_x + self.current_image.get_width() // 2 - text.get_width() // 2, 
+                                  draw_y - 30))
             # Draw "Press E to Enter" text if player is nearby but not inside
-            if not self.occupied and self.player_nearby:
-                font = pygame.font.Font(None, 24)
+            elif self.player_nearby:
                 text = font.render("Press E to Enter", True, (255, 255, 255))
                 screen.blit(text, (draw_x + self.current_image.get_width() // 2 - text.get_width() // 2, 
                                   draw_y - 30))
+
+    def take_damage(self, damage):
+        """Applies damage to the vehicle and returns whether it was destroyed"""
+        self.health = max(0, self.health - damage)
+        return self.health <= 0
 
 
 class Tank(Vehicle):

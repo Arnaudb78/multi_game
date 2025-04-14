@@ -81,7 +81,8 @@ class ClientThread(threading.Thread):
                             'vehicle_type': None,
                             'vehicle_id': None,
                             'vehicle_position': None,
-                            'vehicle_direction': None
+                            'vehicle_direction': None,
+                            'vehicle_health': None
                         }
                         
                         player_message = (player_id, player_data)
@@ -163,6 +164,7 @@ class ClientThread(threading.Thread):
                         vehicle_id = parsed_data.get('vehicle_id')
                         vehicle_position = parsed_data.get('vehicle_position')
                         vehicle_direction = parsed_data.get('vehicle_direction')
+                        vehicle_health = parsed_data.get('vehicle_health')
                         
                         with data_lock:
                             # Récupérer la santé actuelle si non fournie
@@ -182,7 +184,8 @@ class ClientThread(threading.Thread):
                             'vehicle_type': vehicle_type,
                             'vehicle_id': vehicle_id,
                             'vehicle_position': vehicle_position,
-                            'vehicle_direction': vehicle_direction
+                            'vehicle_direction': vehicle_direction,
+                            'vehicle_health': vehicle_health
                         })
                         self.broadcast_message(pos_message, exclude_self=True)
                     
@@ -202,6 +205,16 @@ class ClientThread(threading.Thread):
                                 hit_message = ('hit', {'target_id': target_id, 'shooter_id': self.client_id, 'damage': damage, 'new_health': new_health})
                                 self.broadcast_message(hit_message)
                                 logger.info(f"Player {self.client_id} hit {target_id} for {damage} damage. New health: {new_health}")
+                    
+                    # Handle vehicle hit notification
+                    elif isinstance(parsed_data, dict) and 'vehicle_hit' in parsed_data:
+                        target_id = parsed_data['vehicle_hit']['target_id']
+                        damage = parsed_data['vehicle_hit']['damage']
+                        
+                        # Broadcast the vehicle hit to all clients
+                        vehicle_hit_message = ('vehicle_hit', {'target_id': target_id, 'shooter_id': self.client_id, 'damage': damage})
+                        self.broadcast_message(vehicle_hit_message)
+                        logger.info(f"Player {self.client_id} hit vehicle of {target_id} for {damage} damage.")
                     
                     # Other message types
                     else:
