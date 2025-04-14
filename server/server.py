@@ -65,37 +65,32 @@ class ClientThread(threading.Thread):
                 # Mettre à jour la position du joueur ou gérer les tirs
                 try:
                     data = pickle.loads(data)
-                    if isinstance(data, dict) and 'shot' in data:
-                        # Gérer un nouveau tir
-                        shot_id = str(uuid.uuid4())
-                        shot_data = data['shot']
-                        # Ajouter l'ID du joueur qui a tiré
-                        shot_data['player_id'] = self.client_id
-                        shots[shot_id] = shot_data
+                    if isinstance(data, dict):
+                        if 'shot' in data:
+                            # Gérer un nouveau tir
+                            shot_id = str(uuid.uuid4())
+                            shot_data = data['shot']
+                            # Ajouter l'ID du joueur qui a tiré
+                            shot_data['player_id'] = self.client_id
+                            shots[shot_id] = shot_data
+                            
+                            # Envoyer immédiatement le tir à tous les clients
+                            for client_socket in client_sockets.keys():
+                                try:
+                                    client_socket.send(pickle.dumps(('shot', shot_id, shot_data)))
+                                except socket.error:
+                                    continue
                         
-                        # Envoyer immédiatement le tir à tous les clients
-                        for client_socket in client_sockets.keys():
-                            try:
-                                client_socket.send(pickle.dumps(('shot', shot_id, shot_data)))
-                            except socket.error:
-                                continue
-                        
-                        # Mettre à jour la position du joueur après le tir
-                        if isinstance(data, dict) and 'position' in data:
+                        if 'position' in data:
+                            # Mettre à jour la position du joueur
                             position = data['position']
                             pseudo = data.get('pseudo', "")
                             soldier_type = data.get('soldier_type', "falcon")
                             players[self.client_id] = (self.client_socket, position, pseudo, soldier_type)
                     else:
-                        # Mettre à jour la position du joueur
-                        if isinstance(data, dict) and 'position' in data:
-                            position = data['position']
-                            pseudo = data.get('pseudo', "")
-                            soldier_type = data.get('soldier_type', "falcon")
-                            players[self.client_id] = (self.client_socket, position, pseudo, soldier_type)
-                        else:
-                            position = data
-                            players[self.client_id] = (self.client_socket, position, "", "falcon")
+                        # Handle legacy position format (if any)
+                        position = data
+                        players[self.client_id] = (self.client_socket, position, "", "falcon")
                 except Exception as e:
                     logger.error(f"Error processing player data: {e}")
                     continue

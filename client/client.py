@@ -166,16 +166,14 @@ def receive_data(sock):
                         _, shot_id, shot_data = msg
                         if shot_id not in shots:  # Only add if not already present
                             shots[shot_id] = shot_data
-                    elif isinstance(msg, dict) and 'shot' in msg:
-                        # Gestion des tirs envoyés par le client
-                        shot_data = msg['shot']
-                        shot_id = str(uuid.uuid4())
-                        if shot_id not in shots:  # Only add if not already present
-                            shots[shot_id] = shot_data
                     else:
-                        pid, pos, pseudo, soldier_type = msg
-                        if pid != client_id:
-                            other_players[pid] = (pos, pseudo, soldier_type)
+                        try:
+                            pid, pos, pseudo, soldier_type = msg
+                            if pid != client_id:
+                                other_players[pid] = (pos, pseudo, soldier_type)
+                        except (ValueError, TypeError):
+                            # Skip invalid player data
+                            continue
                 except pickle.UnpicklingError:
                     break
         except socket.error as e:
