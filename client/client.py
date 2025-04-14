@@ -275,6 +275,18 @@ def main():
         player.x = max(0, min(player.x, map_width - 50))
         player.y = max(0, min(player.y, map_height - 50))
 
+        # Send position update to server
+        try:
+            position_data = {
+                'position': (player.x, player.y),
+                'pseudo': player.name,
+                'soldier_type': player.soldier_type
+            }
+            sock.send(pickle.dumps(position_data))
+        except socket.error as e:
+            print(f"Error sending position update: {e}")
+            break
+
         # Update camera to follow player smoothly
         target_camera_x = player.x - SCREEN_WIDTH // 2
         target_camera_y = player.y - SCREEN_HEIGHT // 2

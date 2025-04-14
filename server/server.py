@@ -20,7 +20,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Dictionnaire des joueurs avec leurs positions
-players = {}  # {client_id: (socket, position)}
+players = {}  # {client_id: (socket, position, pseudo, soldier_type)}
 client_sockets = {}  # {socket: client_id}
 
 # Dictionnaire des tirs actifs
@@ -33,7 +33,7 @@ class ClientThread(threading.Thread):
         self.client_socket = client_socket
         self.client_address = client_address
         self.client_id = str(uuid.uuid4())
-        players[self.client_id] = (client_socket, (400, 300))  # Position initiale
+        players[self.client_id] = (client_socket, (400, 300), "", "falcon")  # Position initiale avec pseudo et type
         client_sockets[client_socket] = self.client_id
 
     def send_data(self, data):
@@ -51,9 +51,9 @@ class ClientThread(threading.Thread):
                 return
             
             # Envoyer l'état actuel de tous les joueurs au nouveau client
-            for player_id, (_, player_pos) in players.items():
+            for player_id, (_, pos, pseudo, soldier_type) in players.items():
                 if player_id != self.client_id:  # Ne pas envoyer sa propre position
-                    if not self.send_data((player_id, player_pos)):
+                    if not self.send_data((player_id, pos, pseudo, soldier_type)):
                         return
             
             last_update = 0
@@ -81,8 +81,14 @@ class ClientThread(threading.Thread):
                                 continue
                     else:
                         # Mettre à jour la position du joueur
-                        position = data
-                        players[self.client_id] = (self.client_socket, position)
+                        if isinstance(data, dict) and 'position' in data:
+                            position = data['position']
+                            pseudo = data.get('pseudo', "")
+                            soldier_type = data.get('soldier_type', "falcon")
+                            players[self.client_id] = (self.client_socket, position, pseudo, soldier_type)
+                        else:
+                            position = data
+                            players[self.client_id] = (self.client_socket, position, "", "falcon")
                 except Exception as e:
                     logger.error(f"Error processing player data: {e}")
                     continue
@@ -91,8 +97,8 @@ class ClientThread(threading.Thread):
                 for client_socket in client_sockets.keys():
                     try:
                         # Envoyer toutes les positions à ce client
-                        for player_id, (_, player_pos) in players.items():
-                            if not self.send_data((player_id, player_pos)):
+                        for player_id, (_, pos, pseudo, soldier_type) in players.items():
+                            if not self.send_data((player_id, pos, pseudo, soldier_type)):
                                 break
                     except socket.error as e:
                         logger.error(f"Error sending data to client: {e}")
