@@ -6,7 +6,7 @@ import uuid
 import logging
 from menu import Menu
 from map_manager import MapManager
-from soldier import Soldier
+from soldier import Soldier, SoldierDirection
 
 # Configuration du jeu
 DEFAULT_PORT = 12345
