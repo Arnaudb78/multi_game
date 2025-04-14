@@ -56,6 +56,11 @@ class ClientThread(threading.Thread):
                     if not self.send_data((player_id, pos, pseudo, soldier_type)):
                         return
             
+            # Envoyer tous les tirs actifs au nouveau client
+            for shot_id, shot_data in shots.items():
+                if not self.send_data(('shot', shot_id, shot_data)):
+                    return
+            
             last_update = 0
             while True:
                 data = self.client_socket.recv(BUFFER_SIZE)
@@ -73,11 +78,13 @@ class ClientThread(threading.Thread):
                         shot_data['player_id'] = self.client_id
                         shots[shot_id] = shot_data
                         
-                        # Broadcast shot to all clients
+                        # Broadcast shot to all clients immediately
+                        shot_message = ('shot', shot_id, shot_data)
                         for client_socket in client_sockets.keys():
                             try:
-                                client_socket.send(pickle.dumps(('shot', shot_id, shot_data)))
-                            except socket.error:
+                                client_socket.send(pickle.dumps(shot_message))
+                            except socket.error as e:
+                                logger.error(f"Error sending shot: {e}")
                                 continue
                     
                     # Handle position data
@@ -86,23 +93,19 @@ class ClientThread(threading.Thread):
                         pseudo = data.get('pseudo', "")
                         soldier_type = data.get('soldier_type', "falcon")
                         players[self.client_id] = (self.client_socket, position, pseudo, soldier_type)
-                    elif isinstance(data, tuple) and len(data) == 2:
-                        # Legacy position format
-                        position = data
-                        players[self.client_id] = (self.client_socket, position, "", "falcon")
-                    
-                    # Broadcast player positions to all clients
-                    for client_socket in client_sockets.keys():
-                        try:
-                            for player_id, (_, pos, pseudo, soldier_type) in players.items():
-                                if not self.send_data((player_id, pos, pseudo, soldier_type)):
-                                    break
-                        except socket.error as e:
-                            logger.error(f"Error sending data to client: {e}")
-                            break
-                            
+                        
+                        # Broadcast position update to other clients only
+                        pos_message = (self.client_id, position, pseudo, soldier_type)
+                        for client_socket in client_sockets.keys():
+                            if client_socket != self.client_socket:  # Don't send back to originating client
+                                try:
+                                    client_socket.send(pickle.dumps(pos_message))
+                                except socket.error as e:
+                                    logger.error(f"Error sending position: {e}")
+                                    continue
+                                    
                 except Exception as e:
-                    logger.error(f"Error processing player data: {e}")
+                    logger.error(f"Error processing data: {e}")
                     continue
 
         except socket.error as e:
@@ -114,7 +117,6 @@ class ClientThread(threading.Thread):
                 disconnect_message = ('disconnect', self.client_id)
                 for client_socket in client_sockets.keys():
                     try:
-                        pickle.dumps(disconnect_message)
                         client_socket.send(pickle.dumps(disconnect_message))
                     except socket.error:
                         pass
@@ -123,12 +125,48 @@ class ClientThread(threading.Thread):
                 del client_sockets[self.client_socket]
             logger.info(f"Client disconnected: {self.client_address}")
 
+# Fonction pour nettoyer les tirs périodiquement
+def cleanup_shots():
+    while True:
+        try:
+            time.sleep(1.0)  # Attendre 1 seconde entre les nettoyages
+            
+            shots_to_remove = []
+            map_width = 2000  # Taille approximative de la carte
+            map_height = 2000
+            
+            # Vérifier chaque tir et marquer ceux qui sont sortis de la carte
+            for shot_id, shot_data in shots.items():
+                position = shot_data['position']
+                # Si le tir est sorti des limites de la carte
+                if (position[0] < -100 or position[0] > map_width + 100 or
+                    position[1] < -100 or position[1] > map_height + 100):
+                    shots_to_remove.append(shot_id)
+            
+            # Supprimer les tirs marqués
+            for shot_id in shots_to_remove:
+                if shot_id in shots:
+                    del shots[shot_id]
+                    
+            # Limiter le nombre de tirs actifs pour éviter les fuites de mémoire
+            if len(shots) > 1000:
+                # Supprimer les 200 plus anciens tirs
+                for shot_id in list(shots.keys())[:200]:
+                    del shots[shot_id]
+                    
+        except Exception as e:
+            logger.error(f"Error in cleanup thread: {e}")
 
 def start_server():
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server_socket.bind((HOST, PORT))
     server_socket.listen(5)
     logger.info(f"Serveur démarré sur {HOST}:{PORT}")
+    
+    # Démarrer le thread de nettoyage des tirs
+    cleanup_thread = threading.Thread(target=cleanup_shots, daemon=True)
+    cleanup_thread.start()
 
     while True:
         try:

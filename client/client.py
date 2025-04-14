@@ -142,40 +142,57 @@ def start_server():
 def receive_data(sock):
     global other_players, client_id, shots
     buffer = b""
+    
     while True:
         try:
             data = sock.recv(4096)
             if not data:
                 break
+                
             buffer += data
-            while len(buffer):
-                try:
-                    msg = pickle.loads(buffer)
-                    buffer = b""
-                    if msg[0] == 'init':
-                        client_id = msg[1]
-                    elif msg[0] == 'disconnect':
-                        if msg[1] in other_players:
-                            del other_players[msg[1]]
-                        # Supprimer les tirs du joueur déconnecté
-                        shots_to_remove = [shot_id for shot_id, shot_data in shots.items() if shot_data.get('player_id') == msg[1]]
-                        for shot_id in shots_to_remove:
-                            del shots[shot_id]
-                    elif msg[0] == 'shot':
-                        # Ajouter le tir à la liste des tirs avec son ID
-                        _, shot_id, shot_data = msg
-                        if shot_id not in shots:  # Only add if not already present
+            
+            try:
+                msg = pickle.loads(buffer)
+                buffer = b""  # Vider le buffer après désérialisation réussie
+                
+                if msg[0] == 'init':
+                    client_id = msg[1]
+                    print(f"Connecté avec l'ID: {client_id}")
+                    
+                elif msg[0] == 'disconnect':
+                    if msg[1] in other_players:
+                        print(f"Joueur déconnecté: {other_players[msg[1]][1]}")
+                        del other_players[msg[1]]
+                    # Supprimer les tirs du joueur déconnecté
+                    shots_to_remove = [shot_id for shot_id, shot_data in shots.items() 
+                                      if shot_data.get('player_id') == msg[1]]
+                    for shot_id in shots_to_remove:
+                        del shots[shot_id]
+                        
+                elif msg[0] == 'shot':
+                    # Format du message: ('shot', shot_id, shot_data)
+                    if len(msg) >= 3:
+                        shot_id = msg[1]
+                        shot_data = msg[2]
+                        # Ne pas ajouter nos propres tirs car ils sont déjà dans la liste
+                        if shot_data.get('player_id') != client_id or shot_id not in shots:
                             shots[shot_id] = shot_data
-                    else:
-                        try:
-                            pid, pos, pseudo, soldier_type = msg
-                            if pid != client_id:
-                                other_players[pid] = (pos, pseudo, soldier_type)
-                        except (ValueError, TypeError):
-                            # Skip invalid player data
-                            continue
-                except pickle.UnpicklingError:
-                    break
+                            print(f"Tir reçu: {shot_id} de joueur {shot_data.get('player_id')}")
+                            
+                else:
+                    # Message de position d'un autre joueur
+                    try:
+                        pid, pos, pseudo, soldier_type = msg
+                        if pid != client_id:  # Ne pas traiter notre propre position
+                            other_players[pid] = (pos, pseudo, soldier_type)
+                    except (ValueError, TypeError) as e:
+                        print(f"Erreur format message: {e}")
+                        continue
+                    
+            except (pickle.UnpicklingError, IndexError) as e:
+                print(f"Erreur désérialisation: {e}")
+                buffer = b""  # Vider le buffer en cas d'erreur
+                
         except socket.error as e:
             print(f"Erreur réception: {e}")
             break
@@ -259,6 +276,10 @@ def main():
     threading.Thread(target=receive_data, args=(sock,), daemon=True).start()
     clock = pygame.time.Clock()
     running = True
+    
+    # Limiter la fréquence de tir
+    last_shot_time = 0
+    shot_cooldown = 300  # millisecondes
 
     # Create player soldier
     player = Soldier(player_x, player_y, soldier_type, pseudo)
@@ -282,7 +303,6 @@ def main():
                 'pseudo': player.name,
                 'soldier_type': player.soldier_type
             }
-            # Send position data as a dictionary
             sock.send(pickle.dumps(position_data))
         except socket.error as e:
             print(f"Error sending position update: {e}")
@@ -300,8 +320,11 @@ def main():
         camera_x += (target_camera_x - camera_x) * camera_speed
         camera_y += (target_camera_y - camera_y) * camera_speed
 
-        # Gestion des tirs
-        if keys[pygame.K_SPACE]:  # Supposons que la barre d'espace est utilisée pour tirer
+        # Gestion des tirs avec cooldown
+        current_time = pygame.time.get_ticks()
+        if keys[pygame.K_SPACE] and current_time - last_shot_time > shot_cooldown:
+            last_shot_time = current_time
+            
             # Déterminer la direction du tir en fonction de la direction du joueur
             direction = (1, 0)  # Direction par défaut
             if player.direction == SoldierDirection.LEFT:
@@ -312,7 +335,11 @@ def main():
                 direction = (0, -1)
             elif player.direction == SoldierDirection.FRONT:
                 direction = (0, 1)
-                
+            
+            # Create unique ID for this shot
+            shot_id = str(uuid.uuid4())
+            
+            # Create shot data structure
             shot_data = {
                 'shot': {
                     'position': (player.x, player.y),
@@ -321,12 +348,19 @@ def main():
                     'player_id': client_id
                 }
             }
+            
             try:
-                # Envoyer le tir au serveur
+                # Send shot to server
                 sock.send(pickle.dumps(shot_data))
-                # Changer l'état du joueur pour l'animation de tir
+                
+                # Add shot locally for immediate display
+                shots[shot_id] = shot_data['shot']
+                
+                # Set player state to shooting
                 player.state = SoldierState.SHOOT
-            except socket.error:
+                print(f"Tir envoyé: {shot_id}")
+            except socket.error as e:
+                print(f"Erreur envoi tir: {e}")
                 break
 
         # Mettre à jour et dessiner les tirs
