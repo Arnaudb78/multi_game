@@ -21,7 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Dictionnaire des joueurs avec leurs positions
-players = {}  # {client_id: (socket, position, pseudo, soldier_type)}
+players = {}  # {client_id: (socket, position, pseudo, soldier_type, health)}
 client_sockets = {}  # {socket: client_id}
 
 # Dictionnaire des tirs actifs
@@ -38,7 +38,7 @@ class ClientThread(threading.Thread):
         self.client_id = str(uuid.uuid4())
         
         with data_lock:
-            players[self.client_id] = (client_socket, (400, 300), "", "falcon")  # Position initiale avec pseudo et type
+            players[self.client_id] = (client_socket, (400, 300), "", "falcon", 100)
             client_sockets[client_socket] = self.client_id
 
     def send_data(self, data):
@@ -68,11 +68,11 @@ class ClientThread(threading.Thread):
             with data_lock:
                 player_list = list(players.items())
             
-            for player_id, (_, pos, pseudo, soldier_type) in player_list:
+            for player_id, (_, pos, pseudo, soldier_type, health) in player_list:
                 if player_id != self.client_id:  # Ne pas envoyer sa propre position
                     try:
-                        # Format standard: (client_id, position, pseudo, soldier_type)
-                        player_data = (player_id, pos, pseudo, soldier_type)
+                        # Format enrichi: (client_id, position, pseudo, soldier_type, health)
+                        player_data = (player_id, pos, pseudo, soldier_type, health)
                         if not self.send_data(player_data):
                             logger.warning(f"Failed to send player data for {player_id} to new client {self.client_id}")
                     except Exception as e:
@@ -123,18 +123,56 @@ class ClientThread(threading.Thread):
                         self.broadcast_message(shot_message)
                         logger.info(f"New shot {shot_id} from client {self.client_id}")
                     
+                    # Handle health update
+                    elif isinstance(parsed_data, dict) and 'health_update' in parsed_data:
+                        health = parsed_data['health_update']
+                        
+                        with data_lock:
+                            # Récupérer les données actuelles du joueur
+                            socket, pos, pseudo, soldier_type, _ = players[self.client_id]
+                            # Mettre à jour la santé
+                            players[self.client_id] = (socket, pos, pseudo, soldier_type, health)
+                        
+                        # Transmettre la mise à jour de santé à tous les clients
+                        health_message = ('health_update', self.client_id, health)
+                        self.broadcast_message(health_message)
+                        logger.info(f"Health update for {self.client_id}: {health}")
+                    
                     # Handle position data
                     elif isinstance(parsed_data, dict) and 'position' in parsed_data:
                         position = parsed_data['position']
                         pseudo = parsed_data.get('pseudo', "")
                         soldier_type = parsed_data.get('soldier_type', "falcon")
+                        health = parsed_data.get('health', 100)  # Récupérer la santé s'il est fourni
                         
                         with data_lock:
-                            players[self.client_id] = (self.client_socket, position, pseudo, soldier_type)
+                            # Récupérer la santé actuelle si non fournie
+                            if 'health' not in parsed_data and self.client_id in players:
+                                _, _, _, _, current_health = players[self.client_id]
+                                health = current_health
+                            
+                            players[self.client_id] = (self.client_socket, position, pseudo, soldier_type, health)
                         
                         # Broadcast position update to other clients only
-                        pos_message = (self.client_id, position, pseudo, soldier_type)
+                        pos_message = (self.client_id, position, pseudo, soldier_type, health)
                         self.broadcast_message(pos_message, exclude_self=True)
+                    
+                    # Handle hit notification
+                    elif isinstance(parsed_data, dict) and 'hit' in parsed_data:
+                        target_id = parsed_data['hit']['target_id']
+                        damage = parsed_data['hit']['damage']
+                        
+                        with data_lock:
+                            if target_id in players:
+                                socket, pos, pseudo, soldier_type, health = players[target_id]
+                                # Réduire la santé
+                                new_health = max(0, health - damage)
+                                players[target_id] = (socket, pos, pseudo, soldier_type, new_health)
+                                
+                                # Envoyer une notification de dégâts à tous les clients
+                                hit_message = ('hit', {'target_id': target_id, 'shooter_id': self.client_id, 'damage': damage, 'new_health': new_health})
+                                self.broadcast_message(hit_message)
+                                logger.info(f"Player {self.client_id} hit {target_id} for {damage} damage. New health: {new_health}")
                     
                     # Other message types
                     else:

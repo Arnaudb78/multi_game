@@ -122,7 +122,51 @@ def receive_data(sock):
                             shots[shot_id] = shot_data
                         logger.info(f"Tir reçu: {shot_id} de {shot_data.get('player_id')}")
                 
-                # Message de position (4 éléments: id, pos, pseudo, type)
+                # Message de mise à jour de santé
+                elif isinstance(message, tuple) and len(message) >= 3 and message[0] == 'health_update':
+                    player_id = message[1]
+                    health = message[2]
+                    
+                    # Mettre à jour la santé du joueur local si c'est nous
+                    if player_id == client_id and player:
+                        player.health = health
+                        logger.info(f"Santé locale mise à jour: {health}")
+                    # Sinon, mettre à jour la santé des autres joueurs
+                    elif player_id in other_soldiers:
+                        other_soldiers[player_id].health = health
+                        logger.info(f"Santé du joueur {player_id} mise à jour: {health}")
+                
+                # Message de notification de dégâts
+                elif isinstance(message, tuple) and len(message) >= 2 and message[0] == 'hit':
+                    hit_data = message[1]
+                    target_id = hit_data.get('target_id')
+                    shooter_id = hit_data.get('shooter_id')
+                    damage = hit_data.get('damage', 0)
+                    new_health = hit_data.get('new_health', 0)
+                    
+                    # Si nous sommes la cible, mettre à jour notre santé
+                    if target_id == client_id and player:
+                        player.health = new_health
+                        logger.info(f"Vous avez été touché par {shooter_id} pour {damage} dégâts. Santé: {new_health}")
+                    # Si un autre joueur est touché, mettre à jour sa santé
+                    elif target_id in other_soldiers:
+                        other_soldiers[target_id].health = new_health
+                        logger.info(f"Joueur {target_id} touché par {shooter_id} pour {damage} dégâts. Santé: {new_health}")
+                
+                # Message de position (5 éléments: id, pos, pseudo, type, health)
+                elif isinstance(message, tuple) and len(message) >= 5:
+                    player_id, position, pseudo, soldier_type, health = message
+                    
+                    # Ne pas traiter notre propre position
+                    if player_id != client_id:
+                        with data_lock:
+                            other_players[player_id] = (position, pseudo, soldier_type)
+                        
+                        # Mettre à jour la santé du joueur s'il existe déjà
+                        if player_id in other_soldiers:
+                            other_soldiers[player_id].health = health
+                
+                # Message de position (ancien format à 4 éléments)
                 elif isinstance(message, tuple) and len(message) == 4:
                     player_id, position, pseudo, soldier_type = message
                     
@@ -197,7 +241,8 @@ def send_player_position(sock, player):
         position_data = {
             'position': (player.x, player.y),
             'pseudo': player.name,
-            'soldier_type': player.soldier_type
+            'soldier_type': player.soldier_type,
+            'health': player.health
         }
         sock.send(pickle.dumps(position_data))
         return True
@@ -206,6 +251,39 @@ def send_player_position(sock, player):
         return False
     except Exception as e:
         log_exception(e, "Erreur lors de l'envoi de la position")
+        return False
+
+def send_health_update(sock, health):
+    """Envoie une mise à jour de santé au serveur"""
+    try:
+        health_data = {
+            'health_update': health
+        }
+        sock.send(pickle.dumps(health_data))
+        return True
+    except socket.error as e:
+        logger.error(f"Erreur d'envoi de mise à jour de santé: {e}")
+        return False
+    except Exception as e:
+        log_exception(e, "Erreur lors de l'envoi de la mise à jour de santé")
+        return False
+
+def send_hit_notification(sock, target_id, damage):
+    """Envoie une notification de dégâts au serveur"""
+    try:
+        hit_data = {
+            'hit': {
+                'target_id': target_id,
+                'damage': damage
+            }
+        }
+        sock.send(pickle.dumps(hit_data))
+        return True
+    except socket.error as e:
+        logger.error(f"Erreur d'envoi de notification de dégâts: {e}")
+        return False
+    except Exception as e:
+        log_exception(e, "Erreur lors de l'envoi de la notification de dégâts")
         return False
 
 def send_shot(sock, player, shot_direction):
@@ -309,14 +387,14 @@ def draw_shots(screen, camera_x, camera_y):
             pygame.draw.circle(screen, RED, (int(shot['position'][0] - camera_x), int(shot['position'][1] - camera_y)), 5)
 
 def check_shot_collisions():
-    """Vérifie les collisions entre les tirs et le joueur local"""
+    """Vérifie les collisions entre les tirs et les joueurs"""
     if player is None:
         return []
     
     shots_to_remove = []
     
     with data_lock:
-        # Créer une hitbox pour le joueur local
+        # Vérifier les collisions avec le joueur local
         player_rect = pygame.Rect(player.x - 25, player.y - 25, 50, 50)
         
         for shot_id, shot in list(shots.items()):
@@ -327,15 +405,38 @@ def check_shot_collisions():
             # Créer une hitbox pour le tir
             shot_rect = pygame.Rect(shot['position'][0] - 5, shot['position'][1] - 5, 10, 10)
             
-            # Vérifier la collision
+            # Vérifier la collision avec le joueur local
             if player_rect.colliderect(shot_rect):
                 logger.info(f"Touché par le tir de {shot.get('player_id')}!")
                 shots_to_remove.append(shot_id)
                 
-                # Réduire la santé du joueur
-                player.take_damage(10)
+                # Réduire la santé du joueur local
+                damage = 10
+                player.take_damage(damage)
+                
+                # Envoyer une mise à jour de santé au serveur si nous avons une connexion
+                global sock_global
+                if sock_global:
+                    send_health_update(sock_global, player.health)
+            
+            # Vérifier les collisions avec les autres joueurs si on est le tireur
+            if shot.get('player_id') == client_id:
+                for other_id, other_soldier in other_soldiers.items():
+                    if other_id == client_id:  # Ne pas se frapper soi-même
+                        continue
+                    
+                    other_rect = pygame.Rect(other_soldier.x - 25, other_soldier.y - 25, 50, 50)
+                    if shot_rect.colliderect(other_rect):
+                        logger.info(f"Tir {shot_id} a touché le joueur {other_id}!")
+                        shots_to_remove.append(shot_id)
+                        
+                        # Envoyer une notification de dégâts au serveur
+                        damage = 10
+                        if sock_global:
+                            send_hit_notification(sock_global, other_id, damage)
+                        break
     
-    # Supprimer les tirs qui ont touché le joueur
+    # Supprimer les tirs qui ont touché des joueurs
     with data_lock:
         for shot_id in shots_to_remove:
             if shot_id in shots:
@@ -344,7 +445,8 @@ def check_shot_collisions():
     return shots_to_remove
 
 def main():
-    global SCREEN_WIDTH, SCREEN_HEIGHT, camera_x, camera_y, player, other_soldiers
+    global SCREEN_WIDTH, SCREEN_HEIGHT, camera_x, camera_y, player, other_soldiers, sock_global
+    sock_global = None
     player_x, player_y = 400, 300
 
     # Charger les images de balles
@@ -373,6 +475,7 @@ def main():
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # Désactiver Nagle pour réduire la latence
         sock.connect((host, DEFAULT_PORT))
+        sock_global = sock  # Stocker la socket dans une variable globale pour l'utiliser ailleurs
         logger.info(f"Connecté au serveur {host}:{DEFAULT_PORT}")
     except socket.error as e:
         logger.error(f"Erreur de connexion: {e}")
