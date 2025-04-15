@@ -24,7 +24,19 @@ class Bullet:
     def __init__(self, x, y, direction):
         self.x = x
         self.y = y
-        self.direction = direction
+        
+        # Handle direction as string or enum
+        if isinstance(direction, str):
+            for dir_enum in SoldierDirection:
+                if dir_enum.value == direction:
+                    self.direction = dir_enum
+                    break
+            else:
+                # Default to FRONT if string direction not found
+                self.direction = SoldierDirection.FRONT
+        else:
+            self.direction = direction
+            
         self.speed = 10
         self.images = []
         self.animation_frame = 0
@@ -45,10 +57,19 @@ class Bullet:
             print(f"Bullet assets directory not found: {base_path}")
             return
         
-        prefix = "Horizontal" if self.direction in [SoldierDirection.LEFT, SoldierDirection.RIGHT] else "Vertical"
+        # Determine prefix based on direction
+        if isinstance(self.direction, SoldierDirection):
+            prefix = "Horizontal" if self.direction in [SoldierDirection.LEFT, SoldierDirection.RIGHT] else "Vertical"
+        else:
+            # Default to Horizontal if direction is unknown
+            prefix = "Horizontal"
+            
         for i in range(1, 11):
             try:
                 image_path = os.path.join(base_path, f"{prefix} ({i}).png")
+                if not os.path.exists(image_path):
+                    continue
+                    
                 image = pygame.image.load(image_path).convert_alpha()
                 image.set_colorkey((0, 0, 0))
                 # Scale up the image
@@ -62,6 +83,12 @@ class Bullet:
             except Exception as e:
                 print(f"Error loading bullet image {i}: {str(e)}")
                 break
+                
+        # Create placeholder image if no images were loaded
+        if not self.images:
+            placeholder = pygame.Surface((10, 5))
+            placeholder.fill((255, 255, 0))  # Yellow bullet
+            self.images.append(placeholder)
 
     def update(self):
         # Update position based on direction
@@ -73,6 +100,9 @@ class Bullet:
             self.y -= self.speed
         elif self.direction == SoldierDirection.FRONT:
             self.y += self.speed
+        else:
+            # Default movement if direction is unknown
+            self.x += self.speed
 
         # Update animation
         current_time = pygame.time.get_ticks()
@@ -128,12 +158,53 @@ class Soldier:
             print(f"Soldier assets directory not found: {base_path}")
             return
         
+        # Set default death animation - will be used if specific death animations are missing
+        default_dead_frames = []
+        
+        # First try to load at least one death animation to use as default
+        for direction in SoldierDirection:
+            dir_path = os.path.join(base_path, direction.value)
+            if os.path.exists(dir_path):
+                for i in range(1, 6):  # Dead animation has 5 frames
+                    try:
+                        image_path = os.path.join(dir_path, f"Dead ({i}).png")
+                        if os.path.exists(image_path):
+                            image = pygame.image.load(image_path).convert_alpha()
+                            image.set_colorkey((0, 0, 0))
+                            new_size = (
+                                int(image.get_width() * self.scale_factor),
+                                int(image.get_height() * self.scale_factor)
+                            )
+                            image = pygame.transform.scale(image, new_size)
+                            if direction in [SoldierDirection.LEFT, SoldierDirection.RIGHT]:
+                                image = pygame.transform.flip(image, True, False)
+                            default_dead_frames.append(image)
+                    except Exception:
+                        pass
+                if default_dead_frames:
+                    break
+        
+        # If we couldn't find any death animation, create a simple red square
+        if not default_dead_frames:
+            for i in range(5):  # Create 5 frames
+                surface = pygame.Surface((30, 30))
+                surface.fill((255, 0, 0))
+                default_dead_frames.append(surface)
+        
+        # Load all animations for each state and direction
         for direction in SoldierDirection:
             self.images[direction] = {}
             for state in SoldierState:
                 self.images[direction][state] = []
-                # Load all frames for this state and direction
-                frame_count = 4 if state != SoldierState.DEAD else 5
+                
+                # Special handling for DEAD state
+                if state == SoldierState.DEAD:
+                    # Use default death animation
+                    self.images[direction][state] = default_dead_frames.copy()
+                    continue
+                
+                # For other states, load frames as normal
+                frame_count = 4  # Most animations have 4 frames
                 for i in range(1, frame_count + 1):
                     try:
                         image_path = os.path.join(
@@ -142,6 +213,9 @@ class Soldier:
                             f"{state.value} ({i}).png"
                         )
                         
+                        if not os.path.exists(image_path):
+                            continue
+                            
                         # Load and convert image with alpha channel
                         image = pygame.image.load(image_path).convert_alpha()
                         # Remove black background
@@ -159,6 +233,12 @@ class Soldier:
                     except Exception as e:
                         print(f"Error loading image for {state.value} {direction.value} frame {i}: {str(e)}")
                         continue
+                
+                # If no frames were loaded for this state, add a placeholder
+                if not self.images[direction][state] and state != SoldierState.DEAD:
+                    placeholder = pygame.Surface((30, 30))
+                    placeholder.fill((0, 255, 0) if state == SoldierState.IDLE else (0, 0, 255))
+                    self.images[direction][state].append(placeholder)
 
     def update(self, keys, other_soldiers=None):
         # Handle death animation
@@ -170,12 +250,14 @@ class Soldier:
             current_time = pygame.time.get_ticks()
             if current_time - self.animation_timer > self.animation_delay:
                 self.animation_timer = current_time
+                frames = []
                 if (self.direction in self.images and 
                     SoldierState.DEAD in self.images[self.direction]):
                     frames = self.images[self.direction][SoldierState.DEAD]
-                    if frames and self.animation_frame < len(frames) - 1:
-                        # Only increment frame if not at the last frame of death animation
-                        self.animation_frame = (self.animation_frame + 1)
+                
+                if frames and self.animation_frame < len(frames) - 1:
+                    # Only increment frame if not at the last frame of death animation
+                    self.animation_frame = (self.animation_frame + 1)
             return
         
         # Update position based on keys
@@ -309,4 +391,15 @@ class Soldier:
 
         # Draw bullets
         for bullet in self.bullets:
-            bullet.draw(screen, camera_x, camera_y) 
+            bullet.draw(screen, camera_x, camera_y)
+
+    def serialize_bullet(self):
+        """Convert bullet objects to simple data for network transmission"""
+        bullet_data = []
+        for bullet in self.bullets:
+            bullet_data.append((
+                bullet.x, 
+                bullet.y, 
+                bullet.direction.value if hasattr(bullet.direction, 'value') else bullet.direction
+            ))
+        return bullet_data 

@@ -73,29 +73,41 @@ class ClientThread(threading.Thread):
                         
                         # Only process bullets if player is alive
                         if not is_dead and bullets:
-                            for bullet in bullets[:]:  # Create a copy of bullets list to iterate
-                                bullet_x, bullet_y, direction = bullet[:3]
-                                for target_id, (_, target_pos, _, _, target_health, _) in players.items():
-                                    if target_id != self.client_id:  # Don't damage self
-                                        target_x, target_y = target_pos
-                                        # Simple distance-based collision
-                                        distance = ((bullet_x - target_x) ** 2 + (bullet_y - target_y) ** 2) ** 0.5
-                                        if distance < 30:  # Slightly larger collision radius for better hit detection
-                                            # Only damage players with health > 0
-                                            if target_health > 0:
-                                                # Update target health (-10 damage)
-                                                new_health = max(0, target_health - 10)
-                                                socket_obj, pos, p, st, _, b = players[target_id]
-                                                players[target_id] = (socket_obj, pos, p, st, new_health, b)
+                            bullets_to_remove = []
+                            for bullet_idx, bullet in enumerate(bullets):
+                                try:
+                                    if len(bullet) < 3:
+                                        continue  # Skip invalid bullets
+                                        
+                                    bullet_x, bullet_y, direction = bullet[:3]
+                                    for target_id, (_, target_pos, _, _, target_health, _) in players.items():
+                                        if target_id != self.client_id:  # Don't damage self
+                                            target_x, target_y = target_pos
+                                            # Simple distance-based collision
+                                            distance = ((bullet_x - target_x) ** 2 + (bullet_y - target_y) ** 2) ** 0.5
+                                            if distance < 30:  # Slightly larger collision radius for better hit detection
+                                                # Only damage players with health > 0
+                                                if target_health > 0:
+                                                    # Update target health (-10 damage)
+                                                    new_health = max(0, target_health - 10)
+                                                    socket_obj, pos, p, st, _, b = players[target_id]
+                                                    players[target_id] = (socket_obj, pos, p, st, new_health, b)
+                                                    
+                                                    # Add kill count/score if the player was killed by this bullet
+                                                    if target_health > 0 and new_health <= 0:
+                                                        logger.info(f"Player {pseudo} killed {p}")
                                                 
-                                                # Add kill count/score if the player was killed by this bullet
-                                                if target_health > 0 and new_health <= 0:
-                                                    logger.info(f"Player {pseudo} killed {p}")
-                                            
-                                            # Remove bullet after hit
-                                            if bullet in bullets:
-                                                bullets.remove(bullet)
-                                            break
+                                                # Mark bullet for removal
+                                                bullets_to_remove.append(bullet_idx)
+                                                break
+                                except Exception as e:
+                                    logger.error(f"Error processing bullet: {e}")
+                                    continue
+                                    
+                            # Remove bullets that hit targets (in reverse order to avoid index issues)
+                            for idx in sorted(bullets_to_remove, reverse=True):
+                                if idx < len(bullets):
+                                    bullets.pop(idx)
                         
                         # Store updated player data
                         players[self.client_id] = (self.client_socket, position, pseudo, soldier_type, health, bullets)
@@ -113,9 +125,18 @@ class ClientThread(threading.Thread):
                             # Envoyer toutes les données à ce client
                             for player_id, (_, player_pos, pseudo, soldier_type, health, bullets) in players.items():
                                 try:
-                                    client_socket.send(pickle.dumps((player_id, player_pos, pseudo, soldier_type, health, bullets)))
+                                    # Only send data chunks of reasonable size to prevent buffer issues
+                                    # Limit bullets if needed
+                                    if len(bullets) > 10:
+                                        bullets = bullets[:10]
+                                        
+                                    msg = (player_id, player_pos, pseudo, soldier_type, health, bullets)
+                                    client_socket.send(pickle.dumps(msg, protocol=4))  # Use protocol 4 for better compatibility
                                 except socket.error as e:
                                     logger.error(f"Error sending data to client {client_id}: {e}")
+                                    break
+                                except Exception as e:
+                                    logger.error(f"Error preparing data for client {client_id}: {e}")
                                     break
                         except socket.error as e:
                             logger.error(f"Error sending data to client: {e}")

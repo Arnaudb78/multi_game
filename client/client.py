@@ -12,7 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from menu import Menu
 from game.map_manager import MapManager
-from game.soldier import Soldier, SoldierState
+from game.soldier import Soldier, SoldierState, SoldierDirection
 
 # Configuration du jeu
 DEFAULT_PORT = 12345
@@ -247,23 +247,22 @@ def main():
             camera_x += (target_camera_x - camera_x) * camera_speed
             camera_y += (target_camera_y - camera_y) * camera_speed
 
-            # Extract bullet data for network transmission
-            bullet_data = []
-            for bullet in player.bullets:
-                bullet_data.append((bullet.x, bullet.y, bullet.direction))
-
+            # Use the serialize_bullet method to get safe bullet data for network
             try:
                 msg = {
                     'position': (player.x, player.y),
                     'pseudo': pseudo,
                     'soldier_type': soldier_type,
                     'health': player.health,
-                    'bullets': bullet_data,
+                    'bullets': player.serialize_bullet(),
                     'is_dead': player.is_dead
                 }
                 sock.send(pickle.dumps(msg))
-            except socket.error:
+            except socket.error as e:
+                print(f"Network error: {e}")
                 break
+            except Exception as e:
+                print(f"Error preparing network data: {e}")
 
         screen.fill((0, 0, 0))
         
@@ -281,17 +280,29 @@ def main():
                 other_soldiers[pid].y = pos[1]
                 other_soldiers[pid].health = health
                 
+                # Apply death state if health is 0
+                if health <= 0 and not other_soldiers[pid].is_dead:
+                    other_soldiers[pid].is_dead = True
+                    other_soldiers[pid].state = SoldierState.DEAD
+                    other_soldiers[pid].animation_frame = 0
+                
                 # Clear and update bullets
                 other_soldiers[pid].bullets.clear()
                 for bullet_data in bullets:
-                    x, y, direction = bullet_data
-                    from game.soldier import Bullet
-                    bullet = Bullet(x, y, direction)
-                    other_soldiers[pid].bullets.append(bullet)
-                    
-                # Update soldier state based on health
-                if health <= 0:
-                    other_soldiers[pid].state = SoldierState.DEAD
+                    try:
+                        x, y, direction = bullet_data
+                        # Convert string direction back to enum if needed
+                        if isinstance(direction, str):
+                            for dir_enum in SoldierDirection:
+                                if dir_enum.value == direction:
+                                    direction = dir_enum
+                                    break
+                        from game.soldier import Bullet
+                        bullet = Bullet(x, y, direction)
+                        other_soldiers[pid].bullets.append(bullet)
+                    except Exception as e:
+                        print(f"Error creating bullet from network data: {e}")
+                        continue
                 
             # Draw the soldier and their bullets
             other_soldiers[pid].draw(screen, camera_x, camera_y)
