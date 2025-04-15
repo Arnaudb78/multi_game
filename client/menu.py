@@ -104,7 +104,7 @@ class Menu:
 
             if self.mode == 'join':
                 label = small_font.render("IP de l'hôte :", True, WHITE)
-                self.screen.blit(label, (width/2 - 150, height/2 + 120))
+                self.screen.blit(label, (width/2 - 250, height/2 + 120))
                 self.input_rect = self.draw_input(self.ip_input, width/2 - 50, height/2 + 115, 200, 40, self.active_input)
 
                 continue_button = small_font.render('Se connecter', True, WHITE)
@@ -147,8 +147,6 @@ class Menu:
                     elif event.key == pygame.K_c and (pygame.key.get_mods() & pygame.KMOD_CTRL):
                         # Gestion de la copie avec Ctrl+C
                         set_clipboard_text(self.ip_input)
-                    elif len(self.ip_input) < 15 and event.unicode.isprintable():
-                        self.ip_input += event.unicode
                 elif event.type == pygame.TEXTINPUT and self.active_input:
                     new_input = self.process_ip_input(event.text)
                     if len(self.ip_input) + len(new_input) <= 15:
