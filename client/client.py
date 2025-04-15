@@ -21,6 +21,7 @@ SCREEN_WIDTH, SCREEN_HEIGHT = 800, 600
 player_speed = 5
 HOST = '0.0.0.0'  # Adresse de connection
 PORT = 12345  # Port à utiliser
+BUFFER_SIZE = 8192  # Taille du tampon pour la réception des données
 
 WHITE = (255, 255, 255)
 RED = (255, 0, 0)
@@ -73,7 +74,7 @@ class ClientThread(threading.Thread):
     def receive_data(self):
         while self.running:
             try:
-                data = self.socket.recv(4096)
+                data = self.socket.recv(BUFFER_SIZE)
                 if not data:
                     break
 
@@ -135,19 +136,184 @@ def start_server():
     logger.info(f"Serveur démarré sur {HOST}:{PORT}")
 
     while True:
-        client_socket, client_address = server_socket.accept()
-        logger.info(f"Nouvelle connexion de {client_address}")
-        client_thread = ClientThread(client_address[0], PORT)
-        client_thread.start()
+        try:
+            client_socket, client_address = server_socket.accept()
+            logger.info(f"Nouvelle connexion de {client_address}")
+            
+            # Créer un thread pour gérer ce client
+            client_thread = threading.Thread(
+                target=handle_client_connection,
+                args=(client_socket, client_address),
+                daemon=True
+            )
+            client_thread.start()
+        except socket.error as e:
+            logger.error(f"Erreur lors de l'acceptation de la connexion: {e}")
+
+
+def handle_client_connection(client_socket, client_address):
+    """Gère la connexion d'un client au serveur hébergé localement"""
+    try:
+        # Générer un ID unique pour ce client
+        client_id = str(uuid.uuid4())
+        
+        # Envoyer l'ID au client
+        client_socket.send(pickle.dumps(('init', client_id)))
+        
+        # Ajouter le client à la liste des joueurs
+        players[client_id] = (client_socket, (400, 300), "", "falcon", 100, [], 0.8)
+        client_sockets[client_socket] = client_id
+        
+        # Envoyer l'état actuel de tous les joueurs au nouveau client
+        for player_id, (_, player_pos, pseudo, soldier_type, health, bullets, damage_resistance) in players.items():
+            if player_id != client_id:  # Ne pas envoyer sa propre position
+                client_socket.send(pickle.dumps((player_id, player_pos, pseudo, soldier_type, health, bullets, damage_resistance)))
+        
+        # Boucle principale pour ce client
+        while True:
+            data = client_socket.recv(BUFFER_SIZE)
+            if not data:
+                break
+                
+            try:
+                player_data = pickle.loads(data)
+                if isinstance(player_data, dict):
+                    position = player_data.get('position', (400, 300))
+                    pseudo = player_data.get('pseudo', "")
+                    soldier_type = player_data.get('soldier_type', "falcon")
+                    health = player_data.get('health', 100)
+                    bullets = player_data.get('bullets', [])
+                    is_dead = player_data.get('is_dead', False)
+                    damage_resistance = player_data.get('damage_resistance', 0.8)
+                    
+                    # Traiter les balles si le joueur est vivant
+                    if not is_dead and bullets:
+                        bullets_to_remove = []
+                        for bullet_idx, bullet in enumerate(bullets):
+                            try:
+                                if len(bullet) < 3:
+                                    continue  # Ignorer les balles invalides
+                                    
+                                # Vérifier les collisions avec les autres joueurs
+                                bullet_x, bullet_y, direction = bullet[:3]
+                                for target_id, (_, target_pos, _, target_type, target_health, _, target_resistance) in players.items():
+                                    if target_id != client_id:  # Ne pas se blesser soi-même
+                                        target_x, target_y = target_pos
+                                        # Collision basée sur la distance
+                                        distance = ((bullet_x - target_x) ** 2 + (bullet_y - target_y) ** 2) ** 0.5
+                                        if distance < 30:  # Rayon de collision
+                                            # Ne blesser que les joueurs avec de la santé > 0
+                                            if target_health > 0:
+                                                # Calculer les dégâts avec les multiplicateurs de type et la résistance
+                                                base_damage = 10
+                                                type_multiplier = calculate_damage(soldier_type, target_type)
+                                                actual_damage = base_damage * type_multiplier * target_resistance
+                                                
+                                                # Mettre à jour la santé de la cible
+                                                new_health = max(0, target_health - actual_damage)
+                                                socket_obj, pos, p, st, _, b, dr = players[target_id]
+                                                players[target_id] = (socket_obj, pos, p, st, new_health, b, dr)
+                                                
+                                                # Envoyer une notification de dégâts à la cible
+                                                try:
+                                                    damage_msg = {
+                                                        'type': 'damage',
+                                                        'amount': actual_damage,
+                                                        'from': client_id
+                                                    }
+                                                    socket_obj.send(pickle.dumps(damage_msg))
+                                                except socket.error as e:
+                                                    logger.error(f"Erreur lors de l'envoi de la notification de dégâts: {e}")
+                                                
+                                                # Ajouter un compteur de kills/score si le joueur a été tué par cette balle
+                                                if target_health > 0 and new_health <= 0:
+                                                    logger.info(f"Le joueur {pseudo} a tué {p}")
+                                                
+                                                bullets_to_remove.append(bullet_idx)
+                                                break  # Sortir de la boucle des cibles après avoir touché quelqu'un
+                            except Exception as e:
+                                logger.error(f"Erreur lors du traitement de la balle: {e}")
+                                continue
+                        
+                        # Supprimer les balles qui ont touché des cibles (dans l'ordre inverse pour éviter les problèmes d'index)
+                        for idx in sorted(bullets_to_remove, reverse=True):
+                            if idx < len(bullets):
+                                bullets.pop(idx)
+                    
+                    # Stocker les données mises à jour du joueur
+                    players[client_id] = (client_socket, position, pseudo, soldier_type, health, bullets, damage_resistance)
+            except Exception as e:
+                logger.error(f"Erreur lors du traitement des données du joueur: {e}")
+                continue
+            
+            # Envoyer les données de tous les joueurs à tous les clients
+            for pid, (sock, _, _, _, _, _, _) in players.items():
+                try:
+                    # Envoyer toutes les données à ce client
+                    for player_id, (_, player_pos, pseudo, soldier_type, health, bullets, damage_resistance) in players.items():
+                        try:
+                            # Limiter le nombre de balles si nécessaire pour éviter les problèmes de tampon
+                            if len(bullets) > 10:
+                                bullets = bullets[:10]
+                                
+                            msg = (player_id, player_pos, pseudo, soldier_type, health, bullets, damage_resistance)
+                            sock.send(pickle.dumps(msg, protocol=4))  # Utiliser le protocole 4 pour une meilleure compatibilité
+                        except socket.error as e:
+                            logger.error(f"Erreur lors de l'envoi des données au client {player_id}: {e}")
+                            break
+                        except Exception as e:
+                            logger.error(f"Erreur lors de la préparation des données pour le client {player_id}: {e}")
+                            break
+                except socket.error as e:
+                    logger.error(f"Erreur lors de l'envoi des données au client: {e}")
+                    break
+                    
+    except socket.error as e:
+        logger.error(f"Erreur dans le thread client: {e}")
+    finally:
+        client_socket.close()
+        if client_id in players:
+            # Notifier tous les clients de la déconnexion
+            disconnect_message = ('disconnect', client_id)
+            for _, (sock, _, _, _, _, _, _) in players.items():
+                if sock != client_socket:  # Ne pas envoyer au socket déconnecté
+                    try:
+                        sock.send(pickle.dumps(disconnect_message))
+                    except socket.error:
+                        pass
+            del players[client_id]
+        if client_socket in client_sockets:
+            del client_sockets[client_socket]
+        logger.info(f"Client déconnecté: {client_address}")
+
+
+def calculate_damage(attacker_type, target_type):
+    # Différents types de soldats ont différents multiplicateurs de dégâts
+    damage_multipliers = {
+        "falcon": {
+            "falcon": 1.0,
+            "rogue": 1.2
+        },
+        "rogue": {
+            "falcon": 0.8,
+            "rogue": 1.0
+        }
+    }
+    return damage_multipliers.get(attacker_type.lower(), {}).get(target_type.lower(), 1.0)
 
 
 # === CLIENT CODE ===
 def receive_data(sock):
     global other_players, client_id
     buffer = b""
+    
+    # S'assurer que other_players est initialisé
+    if 'other_players' not in globals():
+        other_players = {}
+    
     while True:
         try:
-            data = sock.recv(4096)
+            data = sock.recv(BUFFER_SIZE)
             if not data:
                 break
             buffer += data
@@ -155,25 +321,43 @@ def receive_data(sock):
                 try:
                     msg = pickle.loads(buffer)
                     buffer = b""
-                    if msg[0] == 'init':
-                        client_id = msg[1]
-                    elif msg[0] == 'disconnect':
-                        if msg[1] in other_players:
-                            del other_players[msg[1]]
-                    else:
-                        pid, pos, pseudo, soldier_type, health, bullets = msg
-                        if pid != client_id:
-                            other_players[pid] = (pos, pseudo, soldier_type, health, bullets)
+                    if isinstance(msg, tuple):
+                        if msg[0] == 'init':
+                            client_id = msg[1]
+                            logger.info(f"ID client reçu: {client_id}")
+                        elif msg[0] == 'disconnect':
+                            if msg[1] in other_players:
+                                del other_players[msg[1]]
+                                logger.info(f"Joueur déconnecté: {msg[1]}")
+                        else:
+                            # Format: (player_id, position, pseudo, soldier_type, health, bullets, damage_resistance)
+                            pid, pos, pseudo, soldier_type, health, bullets, damage_resistance = msg
+                            if pid != client_id:
+                                other_players[pid] = (pos, pseudo, soldier_type, health, bullets, time.time())
+                    elif isinstance(msg, dict):
+                        if msg.get('type') == 'damage':
+                            # Gérer la notification de dégâts
+                            damage_amount = msg.get('amount', 0)
+                            attacker_id = msg.get('from')
+                            
+                            # Mettre à jour la santé du joueur local
+                            if player:
+                                player.take_damage(damage_amount)
+                                logger.info(f"Dégâts reçus: {damage_amount}")
                 except pickle.UnpicklingError:
                     break
         except socket.error as e:
-            print(f"Erreur réception: {e}")
+            logger.error(f"Erreur de réception: {e}")
             break
 
 
 def main():
-    global SCREEN_WIDTH, SCREEN_HEIGHT, camera_x, camera_y, player, other_soldiers
+    global SCREEN_WIDTH, SCREEN_HEIGHT, camera_x, camera_y, player, other_soldiers, other_players
     player_x, player_y = 400, 300
+
+    # Initialiser other_players s'il n'est pas déjà défini
+    if 'other_players' not in globals():
+        other_players = {}
 
     menu = Menu(screen)
     action, ip = menu.show()
@@ -186,21 +370,45 @@ def main():
         pygame.quit()
         return
 
+    # Initialiser la connexion réseau
+    sock = None
+    client_thread = None
+    
     if action == 'host':
-        threading.Thread(target=start_server, daemon=True).start()
-        host = '127.0.0.1'
+        # Démarrer le serveur dans un thread séparé
+        server_thread = threading.Thread(target=start_server, daemon=True)
+        server_thread.start()
+        logger.info("Serveur démarré en mode hébergement")
+        
+        # Attendre un peu pour que le serveur démarre
+        time.sleep(1)
+        
+        # Se connecter au serveur local
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect(('127.0.0.1', DEFAULT_PORT))
+            logger.info("Connecté au serveur local")
+        except socket.error as e:
+            logger.error(f"Erreur de connexion au serveur local: {e}")
+            pygame.quit()
+            return
     else:
-        host = ip
+        # Se connecter au serveur distant
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect((ip, DEFAULT_PORT))
+            logger.info(f"Connecté au serveur distant: {ip}")
+        except socket.error as e:
+            logger.error(f"Erreur de connexion au serveur distant: {e}")
+            pygame.quit()
+            return
 
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect((host, DEFAULT_PORT))
-    except socket.error as e:
-        print(f"Erreur de connexion: {e}")
-        pygame.quit()
-        return
-
-    threading.Thread(target=receive_data, args=(sock,), daemon=True).start()
+    # Démarrer le thread de réception des données
+    client_thread = ClientThread(ip if action == 'join' else '127.0.0.1', DEFAULT_PORT)
+    client_thread.start()
+    
+    # Démarrer le thread de réception des données pour le client local
+    # threading.Thread(target=receive_data, args=(sock,), daemon=True).start()
     clock = pygame.time.Clock()
     running = True
 
@@ -270,14 +478,22 @@ def main():
                     'soldier_type': soldier_type,
                     'health': player.health,
                     'bullets': player.serialize_bullet(),
-                    'is_dead': player.is_dead
+                    'is_dead': player.is_dead,
+                    'damage_resistance': player.damage_resistance
                 }
-                sock.send(pickle.dumps(msg))
+                
+                # Envoyer les données via le client_thread si disponible, sinon via le socket direct
+                if client_thread and client_thread.socket:
+                    client_thread.socket.send(pickle.dumps(msg))
+                elif sock:
+                    sock.send(pickle.dumps(msg))
+                else:
+                    logger.error("Aucune connexion disponible pour envoyer les données")
             except socket.error as e:
-                print(f"Network error: {e}")
+                logger.error(f"Erreur réseau: {e}")
                 break
             except Exception as e:
-                print(f"Error preparing network data: {e}")
+                logger.error(f"Erreur lors de la préparation des données réseau: {e}")
 
         screen.fill((0, 0, 0))
         
@@ -285,42 +501,47 @@ def main():
         map_manager.draw(screen, camera_x, camera_y)
         
         # Draw other players
-        for pid, (pos, name, soldier_type, health, bullets) in other_players.items():
-            if pid not in other_soldiers:
-                # Create new soldier object only if it doesn't exist
-                other_soldiers[pid] = Soldier(pos[0], pos[1], soldier_type, name)
-            else:
-                # Update existing soldier's position and health
-                other_soldiers[pid].x = pos[0]
-                other_soldiers[pid].y = pos[1]
-                other_soldiers[pid].health = health
+        for pid, data in other_players.items():
+            # Vérifier si les données sont dans le bon format
+            if len(data) >= 5:
+                pos, name, soldier_type, health, bullets = data[:5]
+                # Le timestamp est à l'index 5, mais nous n'en avons pas besoin ici
                 
-                # Apply death state if health is 0
-                if health <= 0 and not other_soldiers[pid].is_dead:
-                    other_soldiers[pid].is_dead = True
-                    other_soldiers[pid].state = SoldierState.DEAD
-                    other_soldiers[pid].animation_frame = 0
-                
-                # Clear and update bullets
-                other_soldiers[pid].bullets.clear()
-                for bullet_data in bullets:
-                    try:
-                        x, y, direction = bullet_data
-                        # Convert string direction back to enum if needed
-                        if isinstance(direction, str):
-                            for dir_enum in SoldierDirection:
-                                if dir_enum.value == direction:
-                                    direction = dir_enum
-                                    break
-                        from game.soldier import Bullet
-                        bullet = Bullet(x, y, direction)
-                        other_soldiers[pid].bullets.append(bullet)
-                    except Exception as e:
-                        print(f"Error creating bullet from network data: {e}")
-                        continue
-                
-            # Draw the soldier and their bullets
-            other_soldiers[pid].draw(screen, camera_x, camera_y)
+                if pid not in other_soldiers:
+                    # Create new soldier object only if it doesn't exist
+                    other_soldiers[pid] = Soldier(pos[0], pos[1], soldier_type, name)
+                else:
+                    # Update existing soldier's position and health
+                    other_soldiers[pid].x = pos[0]
+                    other_soldiers[pid].y = pos[1]
+                    other_soldiers[pid].health = health
+                    
+                    # Apply death state if health is 0
+                    if health <= 0 and not other_soldiers[pid].is_dead:
+                        other_soldiers[pid].is_dead = True
+                        other_soldiers[pid].state = SoldierState.DEAD
+                        other_soldiers[pid].animation_frame = 0
+                    
+                    # Clear and update bullets
+                    other_soldiers[pid].bullets.clear()
+                    for bullet_data in bullets:
+                        try:
+                            x, y, direction = bullet_data
+                            # Convert string direction back to enum if needed
+                            if isinstance(direction, str):
+                                for dir_enum in SoldierDirection:
+                                    if dir_enum.value == direction:
+                                        direction = dir_enum
+                                        break
+                            from game.soldier import Bullet
+                            bullet = Bullet(x, y, direction)
+                            other_soldiers[pid].bullets.append(bullet)
+                        except Exception as e:
+                            logger.error(f"Erreur lors de la création d'une balle à partir des données réseau: {e}")
+                            continue
+                    
+                # Draw the soldier and their bullets
+                other_soldiers[pid].draw(screen, camera_x, camera_y)
 
         # Clean up disconnected players
         disconnected_players = set(other_soldiers.keys()) - set(other_players.keys())
@@ -345,28 +566,30 @@ def main():
                          SCREEN_HEIGHT // 2 + 20))
 
         # Dessiner les messages de dégâts
-        for msg in other_players.values():
-            # Calculer la position du message (légèrement au-dessus du joueur)
-            x, y = msg[0]
-            y -= 20  # Décalage vers le haut
-            
-            # Calculer l'alpha (transparence) en fonction du temps
-            age = current_time - msg[5]
-            alpha = max(0, min(255, int(255 * (1 - age / 2.0))))
-            
-            # Créer le texte avec l'attaquant
-            text = f"{msg[1]} {msg[2]} {msg[3]:.1f}"
-            font = pygame.font.Font(None, 24)
-            text_surface = font.render(text, True, RED)
-            text_surface.set_alpha(alpha)
-            
-            # Dessiner le texte
-            screen.blit(text_surface, (x - text_surface.get_width() // 2, y))
+        if client_thread and hasattr(client_thread, 'damage_messages'):
+            for msg in client_thread.damage_messages:
+                # Calculer la position du message (légèrement au-dessus du joueur)
+                x, y = msg['position']
+                y -= 20  # Décalage vers le haut
+                
+                # Calculer l'alpha (transparence) en fonction du temps
+                age = current_time - msg['time']
+                alpha = max(0, min(255, int(255 * (1 - age / 2.0))))
+                
+                # Créer le texte avec l'attaquant
+                text = f"{msg['text']} ({msg['attacker']})"
+                font = pygame.font.Font(None, 24)
+                text_surface = font.render(text, True, RED)
+                text_surface.set_alpha(alpha)
+                
+                # Dessiner le texte
+                screen.blit(text_surface, (x - text_surface.get_width() // 2, y))
 
         pygame.display.flip()
         clock.tick(60)
 
-    sock.close()
+    if sock:
+        sock.close()
     pygame.quit()
 
 
