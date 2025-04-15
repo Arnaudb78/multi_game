@@ -69,23 +69,32 @@ class ClientThread(threading.Thread):
                         soldier_type = player_data.get('soldier_type', "falcon")
                         health = player_data.get('health', 100)
                         bullets = player_data.get('bullets', [])
+                        is_dead = player_data.get('is_dead', False)
                         
-                        # Process bullets damage to other players
-                        if bullets:
-                            for bullet in bullets:
+                        # Only process bullets if player is alive
+                        if not is_dead and bullets:
+                            for bullet in bullets[:]:  # Create a copy of bullets list to iterate
                                 bullet_x, bullet_y, direction = bullet[:3]
                                 for target_id, (_, target_pos, _, _, target_health, _) in players.items():
                                     if target_id != self.client_id:  # Don't damage self
                                         target_x, target_y = target_pos
                                         # Simple distance-based collision
                                         distance = ((bullet_x - target_x) ** 2 + (bullet_y - target_y) ** 2) ** 0.5
-                                        if distance < 20:  # Collision radius
-                                            # Update target health (-10 damage)
-                                            new_health = max(0, target_health - 10)
-                                            socket_obj, pos, p, st, _, b = players[target_id]
-                                            players[target_id] = (socket_obj, pos, p, st, new_health, b)
-                                            # Remove bullet
-                                            bullets.remove(bullet)
+                                        if distance < 30:  # Slightly larger collision radius for better hit detection
+                                            # Only damage players with health > 0
+                                            if target_health > 0:
+                                                # Update target health (-10 damage)
+                                                new_health = max(0, target_health - 10)
+                                                socket_obj, pos, p, st, _, b = players[target_id]
+                                                players[target_id] = (socket_obj, pos, p, st, new_health, b)
+                                                
+                                                # Add kill count/score if the player was killed by this bullet
+                                                if target_health > 0 and new_health <= 0:
+                                                    logger.info(f"Player {pseudo} killed {p}")
+                                            
+                                            # Remove bullet after hit
+                                            if bullet in bullets:
+                                                bullets.remove(bullet)
                                             break
                         
                         # Store updated player data

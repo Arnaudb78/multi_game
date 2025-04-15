@@ -205,9 +205,13 @@ def main():
 
     # Game state
     game_over = False
-    respawn_message_timer = 0
+    respawn_position = (400, 300)  # Default respawn position
+    respawn_cooldown = 0
+    respawn_delay = 1000  # 1 second delay before respawn
 
     while running:
+        current_time = pygame.time.get_ticks()
+        
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -217,9 +221,12 @@ def main():
         # Handle respawn on R key when dead
         if player.health <= 0:
             game_over = True
-            if keys[pygame.K_r]:
+            
+            # Check for R key press and respawn cooldown
+            if keys[pygame.K_r] and current_time - respawn_cooldown > respawn_delay:
                 game_over = False
-                player = Soldier(player_x, player_y, soldier_type, pseudo)
+                player.revive(respawn_position[0], respawn_position[1])
+                respawn_cooldown = current_time
                 
         if not game_over:
             player.update(keys, [other_soldiers.get(pid) for pid in other_soldiers])
@@ -251,7 +258,8 @@ def main():
                     'pseudo': pseudo,
                     'soldier_type': soldier_type,
                     'health': player.health,
-                    'bullets': bullet_data
+                    'bullets': bullet_data,
+                    'is_dead': player.is_dead
                 }
                 sock.send(pickle.dumps(msg))
             except socket.error:

@@ -161,10 +161,21 @@ class Soldier:
                         continue
 
     def update(self, keys, other_soldiers=None):
-        # Skip update if dead
+        # Handle death animation
         if self.health <= 0:
             self.state = SoldierState.DEAD
             self.is_dead = True
+            
+            # Ensure death animation plays through once
+            current_time = pygame.time.get_ticks()
+            if current_time - self.animation_timer > self.animation_delay:
+                self.animation_timer = current_time
+                if (self.direction in self.images and 
+                    SoldierState.DEAD in self.images[self.direction]):
+                    frames = self.images[self.direction][SoldierState.DEAD]
+                    if frames and self.animation_frame < len(frames) - 1:
+                        # Only increment frame if not at the last frame of death animation
+                        self.animation_frame = (self.animation_frame + 1)
             return
         
         # Update position based on keys
@@ -227,10 +238,24 @@ class Soldier:
             self.state = SoldierState.SHOOT
 
     def take_damage(self, amount):
+        if self.health <= 0:
+            return  # Already dead, don't take more damage
+            
         self.health = max(0, self.health - amount)
         if self.health <= 0:
             self.state = SoldierState.DEAD
             self.is_dead = True
+            self.animation_frame = 0  # Reset animation frame to start death animation from beginning
+
+    def revive(self, x, y):
+        """Revive the soldier at the specified position"""
+        self.health = self.max_health
+        self.is_dead = False
+        self.state = SoldierState.IDLE
+        self.x = x
+        self.y = y
+        self.animation_frame = 0
+        self.bullets.clear()
 
     def draw_health_bar(self, screen, x, y):
         # Health bar dimensions
