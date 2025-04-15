@@ -40,17 +40,15 @@ class Bullet:
         # Construct the path to the assets directory
         base_path = os.path.join(multiplayer_dir, 'assets', 'Objects', 'Bullet')
         
-        print(f"Loading bullet images from: {base_path}")  # Debug print
-        
         # Verify the directory exists
         if not os.path.exists(base_path):
-            raise Exception(f"Bullet assets directory not found: {base_path}")
+            print(f"Bullet assets directory not found: {base_path}")
+            return
         
         prefix = "Horizontal" if self.direction in [SoldierDirection.LEFT, SoldierDirection.RIGHT] else "Vertical"
         for i in range(1, 11):
             try:
                 image_path = os.path.join(base_path, f"{prefix} ({i}).png")
-                print(f"Trying to load bullet image: {image_path}")  # Debug print
                 image = pygame.image.load(image_path).convert_alpha()
                 image.set_colorkey((0, 0, 0))
                 # Scale up the image
@@ -61,12 +59,8 @@ class Bullet:
                 )
                 image = pygame.transform.scale(image, new_size)
                 self.images.append(image)
-                print(f"Successfully loaded bullet image: {image_path}")  # Debug print
-            except FileNotFoundError:
-                print(f"Could not find bullet image: {image_path}")
-                break
             except Exception as e:
-                print(f"Error loading bullet image {image_path}: {str(e)}")
+                print(f"Error loading bullet image {i}: {str(e)}")
                 break
 
     def update(self):
@@ -84,10 +78,11 @@ class Bullet:
         current_time = pygame.time.get_ticks()
         if current_time - self.animation_timer > self.animation_delay:
             self.animation_timer = current_time
-            self.animation_frame = (self.animation_frame + 1) % len(self.images)
+            if self.images:
+                self.animation_frame = (self.animation_frame + 1) % len(self.images)
 
     def draw(self, screen, camera_x, camera_y):
-        if self.images:
+        if self.images and self.animation_frame < len(self.images):
             current_image = self.images[self.animation_frame]
             draw_x = self.x - camera_x - current_image.get_width() // 2
             draw_y = self.y - camera_y - current_image.get_height() // 2
@@ -112,6 +107,7 @@ class Soldier:
         self.shoot_delay = 500  # milliseconds between shots
         self.max_health = 100
         self.health = self.max_health
+        self.is_dead = False
         self.load_animations()
 
     def load_animations(self):
@@ -120,35 +116,31 @@ class Soldier:
         
         # Get the absolute path of the current file
         current_file_path = os.path.abspath(__file__)
-        print(f"Current file path: {current_file_path}")  # Debug print
         
         # Go up two directories to reach the multiplayer directory
         multiplayer_dir = os.path.dirname(os.path.dirname(current_file_path))
-        print(f"Multiplayer directory: {multiplayer_dir}")  # Debug print
         
         # Construct the path to the assets directory
         base_path = os.path.join(multiplayer_dir, 'assets', 'soldiers', soldier_folder)
-        print(f"Base path: {base_path}")  # Debug print
         
         # Verify the directory exists
         if not os.path.exists(base_path):
-            raise Exception(f"Soldier assets directory not found: {base_path}. Please check if the directory exists and contains the correct files.")
+            print(f"Soldier assets directory not found: {base_path}")
+            return
         
         for direction in SoldierDirection:
             self.images[direction] = {}
             for state in SoldierState:
                 self.images[direction][state] = []
                 # Load all frames for this state and direction
-                for i in range(1, 5):  # Most animations have 4 frames
-                    if state == SoldierState.DEAD and i > 5:  # Dead has 5 frames
-                        break
+                frame_count = 4 if state != SoldierState.DEAD else 5
+                for i in range(1, frame_count + 1):
                     try:
                         image_path = os.path.join(
                             base_path, 
                             direction.value, 
                             f"{state.value} ({i}).png"
                         )
-                        print(f"Trying to load: {image_path}")  # Debug print
                         
                         # Load and convert image with alpha channel
                         image = pygame.image.load(image_path).convert_alpha()
@@ -164,28 +156,17 @@ class Soldier:
                         if direction in [SoldierDirection.LEFT, SoldierDirection.RIGHT]:
                             image = pygame.transform.flip(image, True, False)
                         self.images[direction][state].append(image)
-                        print(f"Successfully loaded: {image_path}")  # Debug print
-                    except FileNotFoundError:
-                        print(f"Could not find image: {image_path}")
-                        continue
                     except Exception as e:
-                        print(f"Error loading image {image_path}: {str(e)}")
+                        print(f"Error loading image for {state.value} {direction.value} frame {i}: {str(e)}")
                         continue
-
-        # Verify that we have loaded at least some images
-        has_images = False
-        for direction in self.images:
-            for state in self.images[direction]:
-                if self.images[direction][state]:
-                    has_images = True
-                    break
-            if has_images:
-                break
-
-        if not has_images:
-            raise Exception(f"No images were loaded for soldier type: {self.soldier_type}. Check if the path is correct: {base_path}")
 
     def update(self, keys, other_soldiers=None):
+        # Skip update if dead
+        if self.health <= 0:
+            self.state = SoldierState.DEAD
+            self.is_dead = True
+            return
+        
         # Update position based on keys
         if keys[pygame.K_LEFT]:
             self.x -= 5
@@ -225,20 +206,9 @@ class Soldier:
         if self.shoot_cooldown > 0:
             self.shoot_cooldown -= pygame.time.get_ticks() - self.animation_timer
 
-        # Update bullets and check for collisions
+        # Update bullets
         for bullet in self.bullets[:]:
             bullet.update()
-            
-            # Check collision with other soldiers
-            if other_soldiers:
-                for soldier in other_soldiers:
-                    if soldier != self:  # Don't check collision with self
-                        # Simple distance-based collision
-                        distance = ((bullet.x - soldier.x) ** 2 + (bullet.y - soldier.y) ** 2) ** 0.5
-                        if distance < 20:  # Collision radius
-                            soldier.take_damage(10)  # 10 damage per hit
-                            self.bullets.remove(bullet)
-                            break
             
             # Remove bullets that are off screen
             if (bullet.x < -100 or bullet.x > 2000 or 
@@ -260,6 +230,7 @@ class Soldier:
         self.health = max(0, self.health - amount)
         if self.health <= 0:
             self.state = SoldierState.DEAD
+            self.is_dead = True
 
     def draw_health_bar(self, screen, x, y):
         # Health bar dimensions
@@ -298,17 +269,18 @@ class Soldier:
                 # Draw the soldier
                 screen.blit(current_image, (draw_x, draw_y))
                 
-                # Draw name above soldier
-                font = pygame.font.Font(None, 28)
-                label = font.render(self.name, True, (255, 255, 255))
-                label_x = draw_x + current_image.get_width() // 2 - label.get_width() // 2
-                label_y = draw_y - 20
-                screen.blit(label, (label_x, label_y))
+                # Draw name above soldier (only if alive)
+                if self.health > 0:
+                    font = pygame.font.Font(None, 28)
+                    label = font.render(self.name, True, (255, 255, 255))
+                    label_x = draw_x + current_image.get_width() // 2 - label.get_width() // 2
+                    label_y = draw_y - 20
+                    screen.blit(label, (label_x, label_y))
 
-                # Draw health bar
-                health_bar_x = draw_x + current_image.get_width() // 2 - 25  # Center the health bar
-                health_bar_y = draw_y - 40  # Position above the name
-                self.draw_health_bar(screen, health_bar_x, health_bar_y)
+                    # Draw health bar
+                    health_bar_x = draw_x + current_image.get_width() // 2 - 25  # Center the health bar
+                    health_bar_y = draw_y - 40  # Position above the name
+                    self.draw_health_bar(screen, health_bar_x, health_bar_y)
 
         # Draw bullets
         for bullet in self.bullets:

@@ -20,7 +20,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Dictionnaire des joueurs avec leurs positions
-players = {}  # {client_id: (socket, position)}
+players = {}  # {client_id: (socket, position, pseudo, soldier_type, health, bullets)}
 client_sockets = {}  # {socket: client_id}
 
 
@@ -30,7 +30,8 @@ class ClientThread(threading.Thread):
         self.client_socket = client_socket
         self.client_address = client_address
         self.client_id = str(uuid.uuid4())
-        players[self.client_id] = (client_socket, (400, 300))  # Position initiale
+        # Position initiale, pseudo, type, health, bullets
+        players[self.client_id] = (client_socket, (400, 300), "", "falcon", 100, []) 
         client_sockets[client_socket] = self.client_id
 
     def send_data(self, data):
@@ -48,9 +49,9 @@ class ClientThread(threading.Thread):
                 return
             
             # Envoyer l'état actuel de tous les joueurs au nouveau client
-            for player_id, (_, player_pos) in players.items():
+            for player_id, (_, player_pos, pseudo, soldier_type, health, bullets) in players.items():
                 if player_id != self.client_id:  # Ne pas envoyer sa propre position
-                    if not self.send_data((player_id, player_pos)):
+                    if not self.send_data((player_id, player_pos, pseudo, soldier_type, health, bullets)):
                         return
             
             last_update = 0
@@ -59,24 +60,53 @@ class ClientThread(threading.Thread):
                 if not data:
                     break
 
-                # Mettre à jour la position du joueur
+                # Mettre à jour les données du joueur
                 try:
-                    position = pickle.loads(data)
-                    players[self.client_id] = (self.client_socket, position)
+                    player_data = pickle.loads(data)
+                    if isinstance(player_data, dict):
+                        position = player_data.get('position', (400, 300))
+                        pseudo = player_data.get('pseudo', "")
+                        soldier_type = player_data.get('soldier_type', "falcon")
+                        health = player_data.get('health', 100)
+                        bullets = player_data.get('bullets', [])
+                        
+                        # Process bullets damage to other players
+                        if bullets:
+                            for bullet in bullets:
+                                bullet_x, bullet_y, direction = bullet[:3]
+                                for target_id, (_, target_pos, _, _, target_health, _) in players.items():
+                                    if target_id != self.client_id:  # Don't damage self
+                                        target_x, target_y = target_pos
+                                        # Simple distance-based collision
+                                        distance = ((bullet_x - target_x) ** 2 + (bullet_y - target_y) ** 2) ** 0.5
+                                        if distance < 20:  # Collision radius
+                                            # Update target health (-10 damage)
+                                            new_health = max(0, target_health - 10)
+                                            socket_obj, pos, p, st, _, b = players[target_id]
+                                            players[target_id] = (socket_obj, pos, p, st, new_health, b)
+                                            # Remove bullet
+                                            bullets.remove(bullet)
+                                            break
+                        
+                        # Store updated player data
+                        players[self.client_id] = (self.client_socket, position, pseudo, soldier_type, health, bullets)
                 except Exception as e:
-                    logger.error(f"Error processing player position: {e}")
+                    logger.error(f"Error processing player data: {e}")
                     continue
 
                 # Rate limit updates
                 current_time = time.time()
                 if current_time - last_update >= 1.0 / UPDATE_RATE:
                     last_update = current_time
-                    # Envoyer les positions de tous les joueurs à tous les clients
-                    for client_socket in client_sockets.keys():
+                    # Envoyer les données de tous les joueurs à tous les clients
+                    for client_id, (client_socket, _, _, _, _, _) in players.items():
                         try:
-                            # Envoyer toutes les positions à ce client
-                            for player_id, (_, player_pos) in players.items():
-                                if not self.send_data((player_id, player_pos)):
+                            # Envoyer toutes les données à ce client
+                            for player_id, (_, player_pos, pseudo, soldier_type, health, bullets) in players.items():
+                                try:
+                                    client_socket.send(pickle.dumps((player_id, player_pos, pseudo, soldier_type, health, bullets)))
+                                except socket.error as e:
+                                    logger.error(f"Error sending data to client {client_id}: {e}")
                                     break
                         except socket.error as e:
                             logger.error(f"Error sending data to client: {e}")
@@ -89,12 +119,12 @@ class ClientThread(threading.Thread):
             if self.client_id in players:
                 # Notifier tous les clients de la déconnexion
                 disconnect_message = ('disconnect', self.client_id)
-                for client_socket in client_sockets.keys():
-                    try:
-                        pickle.dumps(disconnect_message)
-                        client_socket.send(pickle.dumps(disconnect_message))
-                    except socket.error:
-                        pass
+                for _, (client_socket, _, _, _, _, _) in players.items():
+                    if client_socket != self.client_socket:  # Don't send to disconnected socket
+                        try:
+                            client_socket.send(pickle.dumps(disconnect_message))
+                        except socket.error:
+                            pass
                 del players[self.client_id]
             if self.client_socket in client_sockets:
                 del client_sockets[self.client_socket]
@@ -103,6 +133,7 @@ class ClientThread(threading.Thread):
 
 def start_server():
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server_socket.bind((HOST, PORT))
     server_socket.listen(5)
     logger.info(f"Serveur démarré sur {HOST}:{PORT}")

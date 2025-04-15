@@ -12,7 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from menu import Menu
 from game.map_manager import MapManager
-from game.soldier import Soldier
+from game.soldier import Soldier, SoldierState
 
 # Configuration du jeu
 DEFAULT_PORT = 12345
@@ -22,6 +22,7 @@ HOST = '0.0.0.0'  # Adresse de connection
 PORT = 12345  # Port à utiliser
 
 WHITE = (255, 255, 255)
+RED = (255, 0, 0)
 
 # Initialisation pygame
 pygame.init()
@@ -38,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 # Variables globales
 client_id = None
-other_players = {}  # {client_id: (x, y, pseudo, soldier_type)}
+other_players = {}  # {client_id: (x, y, pseudo, soldier_type, health, bullets)}
 other_soldiers = {}  # Cache for other players' Soldier objects
 player = None
 
@@ -53,7 +54,7 @@ map_manager = MapManager(map_path)
 map_width, map_height = map_manager.get_map_size()
 
 # === SERVER CODE ===
-players = {}  # {client_id: (socket, position, pseudo, soldier_type)}
+players = {}  # {client_id: (socket, position, pseudo, soldier_type, health, bullets)}
 client_sockets = {}
 
 
@@ -63,7 +64,7 @@ class ClientThread(threading.Thread):
         self.client_socket = client_socket
         self.client_address = client_address
         self.client_id = str(uuid.uuid4())
-        players[self.client_id] = (client_socket, (400, 300), "", "falcon")
+        players[self.client_id] = (client_socket, (400, 300), "", "falcon", 100, [])
         client_sockets[client_socket] = self.client_id
 
     def send_data(self, data):
@@ -90,8 +91,10 @@ class ClientThread(threading.Thread):
                         pos = parsed['position']
                         pseudo = parsed['pseudo']
                         soldier_type = parsed['soldier_type']
+                        health = parsed.get('health', 100)
+                        bullets = parsed.get('bullets', [])
                         players[self.client_id] = (
-                            self.client_socket, pos, pseudo, soldier_type
+                            self.client_socket, pos, pseudo, soldier_type, health, bullets
                         )
                     else:
                         continue
@@ -100,9 +103,9 @@ class ClientThread(threading.Thread):
                     continue
 
                 for sock in client_sockets:
-                    for pid, (_, pos, pseudo, soldier_type) in players.items():
+                    for pid, (_, pos, pseudo, soldier_type, health, bullets) in players.items():
                         try:
-                            sock.send(pickle.dumps((pid, pos, pseudo, soldier_type)))
+                            sock.send(pickle.dumps((pid, pos, pseudo, soldier_type, health, bullets)))
                         except socket.error:
                             continue
         finally:
@@ -154,9 +157,9 @@ def receive_data(sock):
                         if msg[1] in other_players:
                             del other_players[msg[1]]
                     else:
-                        pid, pos, pseudo, soldier_type = msg
+                        pid, pos, pseudo, soldier_type, health, bullets = msg
                         if pid != client_id:
-                            other_players[pid] = (pos, pseudo, soldier_type)
+                            other_players[pid] = (pos, pseudo, soldier_type, health, bullets)
                 except pickle.UnpicklingError:
                     break
         except socket.error as e:
@@ -200,39 +203,59 @@ def main():
     # Create player soldier
     player = Soldier(player_x, player_y, soldier_type, pseudo)
 
+    # Game state
+    game_over = False
+    respawn_message_timer = 0
+
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
 
         keys = pygame.key.get_pressed()
-        player.update(keys)
+        
+        # Handle respawn on R key when dead
+        if player.health <= 0:
+            game_over = True
+            if keys[pygame.K_r]:
+                game_over = False
+                player = Soldier(player_x, player_y, soldier_type, pseudo)
+                
+        if not game_over:
+            player.update(keys, [other_soldiers.get(pid) for pid in other_soldiers])
 
-        # Clamp player position to map boundaries
-        player.x = max(0, min(player.x, map_width - 50))
-        player.y = max(0, min(player.y, map_height - 50))
+            # Clamp player position to map boundaries
+            player.x = max(0, min(player.x, map_width - 50))
+            player.y = max(0, min(player.y, map_height - 50))
 
-        # Update camera to follow player smoothly
-        target_camera_x = player.x - SCREEN_WIDTH // 2
-        target_camera_y = player.y - SCREEN_HEIGHT // 2
+            # Update camera to follow player smoothly
+            target_camera_x = player.x - SCREEN_WIDTH // 2
+            target_camera_y = player.y - SCREEN_HEIGHT // 2
 
-        # Clamp camera to map boundaries
-        target_camera_x = max(0, min(target_camera_x, map_width - SCREEN_WIDTH))
-        target_camera_y = max(0, min(target_camera_y, map_height - SCREEN_HEIGHT))
+            # Clamp camera to map boundaries
+            target_camera_x = max(0, min(target_camera_x, map_width - SCREEN_WIDTH))
+            target_camera_y = max(0, min(target_camera_y, map_height - SCREEN_HEIGHT))
 
-        # Smooth camera movement
-        camera_x += (target_camera_x - camera_x) * camera_speed
-        camera_y += (target_camera_y - camera_y) * camera_speed
+            # Smooth camera movement
+            camera_x += (target_camera_x - camera_x) * camera_speed
+            camera_y += (target_camera_y - camera_y) * camera_speed
 
-        try:
-            msg = {
-                'position': (player.x, player.y),
-                'pseudo': pseudo,
-                'soldier_type': soldier_type
-            }
-            sock.send(pickle.dumps(msg))
-        except socket.error:
-            break
+            # Extract bullet data for network transmission
+            bullet_data = []
+            for bullet in player.bullets:
+                bullet_data.append((bullet.x, bullet.y, bullet.direction))
+
+            try:
+                msg = {
+                    'position': (player.x, player.y),
+                    'pseudo': pseudo,
+                    'soldier_type': soldier_type,
+                    'health': player.health,
+                    'bullets': bullet_data
+                }
+                sock.send(pickle.dumps(msg))
+            except socket.error:
+                break
 
         screen.fill((0, 0, 0))
         
@@ -240,14 +263,29 @@ def main():
         map_manager.draw(screen, camera_x, camera_y)
         
         # Draw other players
-        for pid, (pos, name, soldier_type) in other_players.items():
+        for pid, (pos, name, soldier_type, health, bullets) in other_players.items():
             if pid not in other_soldiers:
                 # Create new soldier object only if it doesn't exist
                 other_soldiers[pid] = Soldier(pos[0], pos[1], soldier_type, name)
             else:
-                # Update existing soldier's position
+                # Update existing soldier's position and health
                 other_soldiers[pid].x = pos[0]
                 other_soldiers[pid].y = pos[1]
+                other_soldiers[pid].health = health
+                
+                # Clear and update bullets
+                other_soldiers[pid].bullets.clear()
+                for bullet_data in bullets:
+                    x, y, direction = bullet_data
+                    from game.soldier import Bullet
+                    bullet = Bullet(x, y, direction)
+                    other_soldiers[pid].bullets.append(bullet)
+                    
+                # Update soldier state based on health
+                if health <= 0:
+                    other_soldiers[pid].state = SoldierState.DEAD
+                
+            # Draw the soldier and their bullets
             other_soldiers[pid].draw(screen, camera_x, camera_y)
 
         # Clean up disconnected players
@@ -256,7 +294,21 @@ def main():
             del other_soldiers[pid]
 
         # Draw current player
-        player.draw(screen, camera_x, camera_y)
+        if not game_over:
+            player.draw(screen, camera_x, camera_y)
+        else:
+            # Show game over and respawn message
+            game_over_font = pygame.font.Font(None, 72)
+            game_over_text = game_over_font.render("GAME OVER", True, RED)
+            respawn_font = pygame.font.Font(None, 36)
+            respawn_text = respawn_font.render("Press R to respawn", True, WHITE)
+            
+            screen.blit(game_over_text, 
+                        (SCREEN_WIDTH // 2 - game_over_text.get_width() // 2, 
+                         SCREEN_HEIGHT // 2 - 50))
+            screen.blit(respawn_text, 
+                        (SCREEN_WIDTH // 2 - respawn_text.get_width() // 2, 
+                         SCREEN_HEIGHT // 2 + 20))
 
         pygame.display.flip()
         clock.tick(60)
