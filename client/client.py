@@ -6,6 +6,7 @@ import uuid
 import logging
 import sys
 import os
+import time
 
 # Add the parent directory to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -59,68 +60,71 @@ client_sockets = {}
 
 
 class ClientThread(threading.Thread):
-    def __init__(self, client_socket, client_address):
+    def __init__(self, server_address, server_port):
         threading.Thread.__init__(self)
-        self.client_socket = client_socket
-        self.client_address = client_address
-        self.client_id = str(uuid.uuid4())
-        players[self.client_id] = (client_socket, (400, 300), "", "falcon", 100, [])
-        client_sockets[client_socket] = self.client_id
+        self.server_address = server_address
+        self.server_port = server_port
+        self.socket = None
+        self.client_id = None
+        self.players = {}  # {client_id: (position, pseudo, soldier_type, health, bullets, damage_resistance)}
+        self.damage_messages = []  # Liste des messages de dégâts à afficher
+        self.running = True
 
-    def send_data(self, data):
-        try:
-            self.client_socket.send(pickle.dumps(data))
-            return True
-        except socket.error as e:
-            logger.error(f"Erreur envoi client: {e}")
-            return False
-
-    def run(self):
-        try:
-            if not self.send_data(('init', self.client_id)):
-                return
-
-            while True:
-                data = self.client_socket.recv(4096)
+    def receive_data(self):
+        while self.running:
+            try:
+                data = self.socket.recv(4096)
                 if not data:
                     break
 
-                try:
-                    parsed = pickle.loads(data)
-                    if isinstance(parsed, dict):
-                        pos = parsed['position']
-                        pseudo = parsed['pseudo']
-                        soldier_type = parsed['soldier_type']
-                        health = parsed.get('health', 100)
-                        bullets = parsed.get('bullets', [])
-                        players[self.client_id] = (
-                            self.client_socket, pos, pseudo, soldier_type, health, bullets
-                        )
+                message = pickle.loads(data)
+                
+                if isinstance(message, tuple):
+                    if message[0] == 'init':
+                        self.client_id = message[1]
+                        logger.info(f"Connected to server with ID: {self.client_id}")
+                    elif message[0] == 'disconnect':
+                        player_id = message[1]
+                        if player_id in self.players:
+                            del self.players[player_id]
                     else:
-                        continue
-                except Exception as e:
-                    logger.error(f"Erreur parsing: {e}")
-                    continue
+                        player_id, position, pseudo, soldier_type, health, bullets, damage_resistance = message
+                        self.players[player_id] = (position, pseudo, soldier_type, health, bullets, damage_resistance)
+                elif isinstance(message, dict) and message.get('type') == 'damage':
+                    # Gérer la notification de dégâts
+                    damage_amount = message.get('amount', 0)
+                    attacker_id = message.get('from')
+                    if attacker_id in self.players:
+                        attacker_pseudo = self.players[attacker_id][1]
+                        self.damage_messages.append({
+                            'text': f"-{damage_amount:.1f}",
+                            'position': self.players[self.client_id][0],  # Position du joueur touché
+                            'time': time.time(),
+                            'attacker': attacker_pseudo
+                        })
+                        
+                        # Mettre à jour la santé du joueur local
+                        if self.client_id in self.players:
+                            pos, pseudo, st, health, bullets, dr = self.players[self.client_id]
+                            self.players[self.client_id] = (pos, pseudo, st, max(0, health - damage_amount), bullets, dr)
 
-                for sock in client_sockets:
-                    for pid, (_, pos, pseudo, soldier_type, health, bullets) in players.items():
-                        try:
-                            sock.send(pickle.dumps((pid, pos, pseudo, soldier_type, health, bullets)))
-                        except socket.error:
-                            continue
+            except socket.error as e:
+                logger.error(f"Socket error in receive_data: {e}")
+                break
+            except Exception as e:
+                logger.error(f"Error in receive_data: {e}")
+                continue
+
+    def run(self):
+        try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.connect((self.server_address, self.server_port))
+            self.receive_data()
+        except Exception as e:
+            logger.error(f"Error in client thread: {e}")
         finally:
-            self.client_socket.close()
-            if self.client_id in players:
-                msg = ('disconnect', self.client_id)
-                for sock in client_sockets:
-                    try:
-                        sock.send(pickle.dumps(msg))
-                    except socket.error:
-                        pass
-                del players[self.client_id]
-            if self.client_socket in client_sockets:
-                del client_sockets[self.client_socket]
-            logger.info(f"Client déconnecté: {self.client_address}")
+            if self.socket:
+                self.socket.close()
 
 
 def start_server():
@@ -133,7 +137,7 @@ def start_server():
     while True:
         client_socket, client_address = server_socket.accept()
         logger.info(f"Nouvelle connexion de {client_address}")
-        client_thread = ClientThread(client_socket, client_address)
+        client_thread = ClientThread(client_address[0], PORT)
         client_thread.start()
 
 
@@ -209,12 +213,23 @@ def main():
     respawn_cooldown = 0
     respawn_delay = 1000  # 1 second delay before respawn
 
+    # Boucle principale du jeu
+    last_cleanup = time.time()
+    
     while running:
-        current_time = pygame.time.get_ticks()
+        current_time = time.time()
         
+        # Nettoyer les messages de dégâts anciens
+        if current_time - last_cleanup > 0.1:  # Nettoyage toutes les 100ms
+            other_players = {pid: data for pid, data in other_players.items() if current_time - data[5] < 2.0}
+            last_cleanup = current_time
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    running = False
 
         keys = pygame.key.get_pressed()
         
@@ -328,6 +343,25 @@ def main():
             screen.blit(respawn_text, 
                         (SCREEN_WIDTH // 2 - respawn_text.get_width() // 2, 
                          SCREEN_HEIGHT // 2 + 20))
+
+        # Dessiner les messages de dégâts
+        for msg in other_players.values():
+            # Calculer la position du message (légèrement au-dessus du joueur)
+            x, y = msg[0]
+            y -= 20  # Décalage vers le haut
+            
+            # Calculer l'alpha (transparence) en fonction du temps
+            age = current_time - msg[5]
+            alpha = max(0, min(255, int(255 * (1 - age / 2.0))))
+            
+            # Créer le texte avec l'attaquant
+            text = f"{msg[1]} {msg[2]} {msg[3]:.1f}"
+            font = pygame.font.Font(None, 24)
+            text_surface = font.render(text, True, RED)
+            text_surface.set_alpha(alpha)
+            
+            # Dessiner le texte
+            screen.blit(text_surface, (x - text_surface.get_width() // 2, y))
 
         pygame.display.flip()
         clock.tick(60)

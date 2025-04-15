@@ -138,7 +138,19 @@ class Soldier:
         self.max_health = 100
         self.health = self.max_health
         self.is_dead = False
+        self.damage_resistance = self._get_damage_resistance()
+        self.last_damage_time = 0
+        self.damage_effect_duration = 500  # milliseconds
+        self.is_damaged = False
         self.load_animations()
+
+    def _get_damage_resistance(self):
+        # Différents types de soldats ont différentes résistances aux dégâts
+        resistances = {
+            "falcon": 0.8,  # 20% de réduction des dégâts
+            "rogue": 0.6    # 40% de réduction des dégâts
+        }
+        return resistances.get(self.soldier_type.lower(), 1.0)
 
     def load_animations(self):
         # Handle case sensitivity for soldier type
@@ -241,6 +253,11 @@ class Soldier:
                     self.images[direction][state].append(placeholder)
 
     def update(self, keys, other_soldiers=None):
+        # Mettre à jour l'effet visuel de dégâts
+        current_time = pygame.time.get_ticks()
+        if self.is_damaged and current_time - self.last_damage_time > self.damage_effect_duration:
+            self.is_damaged = False
+            
         # Handle death animation
         if self.health <= 0:
             self.state = SoldierState.DEAD
@@ -323,7 +340,14 @@ class Soldier:
         if self.health <= 0:
             return  # Already dead, don't take more damage
             
-        self.health = max(0, self.health - amount)
+        # Appliquer la résistance aux dégâts
+        actual_damage = amount * self.damage_resistance
+        self.health = max(0, self.health - actual_damage)
+        
+        # Activer l'effet visuel de dégâts
+        self.is_damaged = True
+        self.last_damage_time = pygame.time.get_ticks()
+        
         if self.health <= 0:
             self.state = SoldierState.DEAD
             self.is_dead = True
@@ -373,8 +397,14 @@ class Soldier:
                 draw_x = self.x - camera_x - current_image.get_width() // 2
                 draw_y = self.y - camera_y - current_image.get_height() // 2
                 
-                # Draw the soldier
-                screen.blit(current_image, (draw_x, draw_y))
+                # Draw the soldier with damage effect if needed
+                if self.is_damaged:
+                    # Create a red-tinted version of the image
+                    tinted_image = current_image.copy()
+                    tinted_image.fill((255, 0, 0, 128), special_flags=pygame.BLEND_RGBA_MULT)
+                    screen.blit(tinted_image, (draw_x, draw_y))
+                else:
+                    screen.blit(current_image, (draw_x, draw_y))
                 
                 # Draw name above soldier (only if alive)
                 if self.health > 0:
